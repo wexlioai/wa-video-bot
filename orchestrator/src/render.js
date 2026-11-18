@@ -14,21 +14,21 @@ const hash = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 1
  * Generate (or reuse cached) voiceover for every scene, then write props.json for Remotion.
  * Audio is cached by narration+voice+model, so an edit only re-voices the scenes it changed.
  */
-export async function buildProps(job, plan, onScene) {
+export async function buildProps(job, plan, onScene, { speed = 1 } = {}) {
   const audioDir = path.join(job.dir, 'audio');
   await fs.mkdir(audioDir, { recursive: true });
   const scenes = [];
   let charsSpent = 0;
   for (const [idx, s] of plan.scenes.entries()) {
     await onScene?.(idx + 1, plan.scenes.length);
-    const key = hash(`${cfg.tts.provider}|${{ elevenlabs: cfg.eleven.model, openspeaker: cfg.openspeaker.speed }[cfg.tts.provider] ?? cfg.tts.rate}|${job.voice.id}|${s.narration}`);
+    const key = hash(`${cfg.tts.provider}|${{ elevenlabs: cfg.eleven.model, openspeaker: cfg.openspeaker.speed }[cfg.tts.provider] ?? cfg.tts.rate}|${job.voice.id}|${s.narration}${speed !== 1 ? `|x${speed}` : ''}`);
     const rel = `audio/${s.id}-${key}.mp3`;
     const meta = path.join(job.dir, `audio/${s.id}-${key}.json`);
     let info;
     if ((await exists(meta)) && (await exists(path.join(job.dir, rel)))) {
       info = await readJson(meta);
     } else {
-      info = await speak(s.narration, job.voice.id, path.join(job.dir, rel), plan.language);
+      info = await speak(s.narration, job.voice.id, path.join(job.dir, rel), plan.language, { speed });
       await writeJson(meta, info);
       charsSpent += s.narration.length;
     }

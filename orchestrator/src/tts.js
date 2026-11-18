@@ -4,10 +4,17 @@ import { cfg, ROOT } from './config.js';
 import { audioDuration, run } from './util.js';
 
 /** Speak with the configured provider: 'edge' (free), 'openspeaker' or 'elevenlabs'. */
-export async function speak(text, voiceId, outFile, language) {
-  if (cfg.tts.provider === 'elevenlabs') return speakEleven(text, voiceId, outFile, language);
-  if (cfg.tts.provider === 'openspeaker') return speakOpenSpeaker(text, voiceId, outFile);
-  return speakEdge(text, voiceId, outFile);
+// speed: extra multiplier from the video's settings (1 = the configured default)
+export async function speak(text, voiceId, outFile, language, { speed = 1 } = {}) {
+  if (cfg.tts.provider === 'elevenlabs') return speakEleven(text, voiceId, outFile, language, speed);
+  if (cfg.tts.provider === 'openspeaker') return speakOpenSpeaker(text, voiceId, outFile, speed);
+  return speakEdge(text, voiceId, outFile, speed);
+}
+
+function edgeRate(speed) {
+  const base = parseInt(String(cfg.tts.rate).replace('%', ''), 10) || 0;
+  const r = Math.max(-50, Math.min(100, base + Math.round((speed - 1) * 100)));
+  return `${r >= 0 ? '+' : ''}${r}%`;
 }
 
 // ---------------------------------------------------------------- OpenSpeaker
@@ -44,11 +51,11 @@ async function osJson(url, opts = {}) {
   }
 }
 
-async function speakOpenSpeaker(text, voiceId, outFile) {
+async function speakOpenSpeaker(text, voiceId, outFile, speed = 1) {
   const fd = new FormData();
   fd.append('text', text);
   fd.append('voice_id', voiceId);
-  fd.append('speed', String(cfg.openspeaker.speed));
+  fd.append('speed', String(Math.min(1.5, Math.max(0.5, Math.round(cfg.openspeaker.speed * speed * 100) / 100))));
   fd.append('with_transcript', 'true');
   fd.append('file_name', path.basename(outFile, path.extname(outFile)));
   const sub = await osJson(`${OS_API}/v3/text-to-speech`, { method: 'POST', body: fd });
@@ -156,14 +163,14 @@ function splitSegment(seg) {
 
 const EDGE_SCRIPT = path.join(ROOT, 'orchestrator', 'scripts', 'edge_tts_run.py');
 
-async function speakEdge(text, voice, outFile) {
+async function speakEdge(text, voice, outFile, speed = 1) {
   const tmpText = `${outFile}.txt`;
   const meta = `${outFile}.words.json`;
   await fs.writeFile(tmpText, text);
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) { // the free service occasionally drops a connection
     try {
-      await run(cfg.tts.python, [EDGE_SCRIPT, 'speak', '--voice', voice, '--text-file', tmpText, '--out', outFile, '--meta', meta, '--rate', cfg.tts.rate], { timeoutMs: 180_000 });
+      await run(cfg.tts.python, [EDGE_SCRIPT, 'speak', '--voice', voice, '--text-file', tmpText, '--out', outFile, '--meta', meta, '--rate', edgeRate(speed)], { timeoutMs: 180_000 });
       lastErr = null;
       break;
     } catch (e) {
@@ -231,11 +238,13 @@ const headers = () => ({ 'xi-api-key': cfg.eleven.apiKey, 'Content-Type': 'appli
  * Tries the with-timestamps endpoint (exact word timing for captions); if the model
  * doesn't support it, falls back to plain TTS and spreads word timings by length.
  */
-async function speakEleven(text, voiceId, outFile, language) {
+async function speakEleven(text, voiceId, outFile, language, speed = 1) {
+  const vs = speed !== 1 ? { voice_settings: { speed: Math.min(1.2, Math.max(0.7, speed)) } } : {};
   const body = JSON.stringify({
     text,
     model_id: cfg.eleven.model,
     ...(language ? { language_code: language } : {}),
+    ...vs,
   });
   const q = '?output_format=mp3_44100_128';
 

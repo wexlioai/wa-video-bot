@@ -11,7 +11,8 @@ import { uploadVideo } from './youtube.js';
 import { serial, exists, readJson, writeJson, queueLength } from './util.js';
 import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
 import { startProgress } from './progress.js';
-import { engineMissing, runEngineTest, doctor } from './motion.js';
+import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk } from './motion.js';
+import { initSettings, snapshotVersion } from './project.js';
 import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
@@ -266,19 +267,36 @@ const steps = {
     job.state = 'PRODUCING';
     await saveJob(job);
     const plan = await loadPlan(job);
+    const settings = await initSettings(job, (await loadPrefs()).defaultSettings);
     const p = await startProgress(`🎙 Recording the voiceover with ${job.voice.name}…`);
     try {
-      const { seconds } = await buildProps(job, plan, (i, n) => p.update(`🎙 Recording the voiceover with ${job.voice.name}: scene ${i}/${n}`));
+      const { seconds } = await buildProps(job, plan, (i, n) => p.update(`🎙 Recording the voiceover with ${job.voice.name}: scene ${i}/${n}`), { speed: settings.voice.speed });
       job.seconds = seconds;
+      let engine = await motionEngine();
       for (const [k, f] of job.formats.entries()) {
         const label = f === 'short' ? 'Short (9:16)' : 'long video (16:9)';
         const part = job.formats.length > 1 ? ` (${k + 1}/${job.formats.length})` : '';
         await p.update(`🎬 Rendering the ${label}${part}… 0%`, true);
         let lastPct = 0;
-        job.outputs[f] = await renderVideo(job, f, (pct) => {
+        const onPct = (pct) => {
           if (pct >= lastPct + 10) { lastPct = pct - (pct % 10); p.update(`🎬 Rendering the ${label}${part}… ${lastPct}%`); }
-        });
+        };
+        if (engine === 'hyperframes') {
+          try {
+            const props = await readJson(path.join(job.dir, 'props.json'));
+            job.outputs[f] = await renderProject(job, f, { props, settings, onPercent: onPct });
+          } catch (e) {
+            console.log(`${ts()} hyperframes render failed, falling back to remotion: ${e.message}`);
+            await wa.sendText(`⚠️ The new motion engine failed on this video, so I'm using the classic one.\n${e.message.slice(0, 300)}`);
+            engine = 'remotion';
+            lastPct = 0;
+          }
+        }
+        if (engine === 'remotion') job.outputs[f] = await renderVideo(job, f, onPct);
       }
+      job.engine = engine;
+      job.version = await snapshotVersion(job, job.changeNote || 'first version');
+      job.changeNote = null;
       await p.done(`✅ Video ready (took ${p.elapsed()}). Sending the preview…`);
     } catch (e) {
       await p.done();
@@ -296,7 +314,7 @@ const steps = {
       const name = `${plan.title.replace(/[^\w\s-]+/g, '').trim().slice(0, 50) || 'video'} (${label.replace(':', 'x')}).mp4`;
       // HD previews go as a document: WhatsApp keeps the original quality (tap to play)
       await wa.sendVideo(fileUrl(job, rel),
-        `${plan.title} (${label}, ${fmt(seconds)}${out.hd ? `, full HD, ${mb} MB` : ', 720p preview'})`,
+        `${plan.title} (${label}, ${fmt(seconds)}${out.hd ? `, full HD, ${mb} MB` : ', 720p preview'}${job.version ? `, v${job.version}` : ''})`,
         out.hd || size > 15 * 1024 * 1024, name);
     }
     if (job.formats.includes('short') && seconds > 180) {
@@ -329,6 +347,7 @@ const steps = {
       throw new Error(`Edit produced an invalid plan (reverted): ${errs[0]}`);
     }
     await wa.sendText(`✏️ ${reply.split('\n').pop().slice(0, 300)}`);
+    job.changeNote = request.slice(0, 120);
     return steps.produce(job);
   },
 
@@ -507,6 +526,7 @@ async function engineTest() {
         ].join('\n\n'));
       }
       const speed = r.seconds / r.renderSec;
+      await markEngineOk({ machine: r.machine, renderSec: r.renderSec, seconds: r.seconds });
       await p.done(`✅ Engine test passed (took ${p.elapsed()}).`);
       await wa.sendText([
         '🧪 *Engine test result*',
@@ -516,6 +536,7 @@ async function engineTest() {
         `File: ${r.mb.toFixed(1)} MB, full HD`,
         r.voiceError ? `Voice: failed (${r.voiceError}), rendered without voice` : `Voice: ${r.words} words, captions synced (${r.voiceSec.toFixed(0)} s)`,
         `Lint: ${r.lintOk ? 'clean' : `warnings\n${r.lint}`}`,
+        process.env.MOTION_ENGINE === 'remotion' ? 'New videos still use the classic engine (MOTION_ENGINE=remotion in .env).' : '✅ New videos will now use the new motion engine.',
       ].join('\n'));
       await wa.sendVideo(`${cfg.selfUrl}/files/${cfg.secret}/${id}/engine-test.mp4`, 'Engine test (HyperFrames, 15 s, full HD)', true, 'engine-test.mp4');
     } catch (e) {

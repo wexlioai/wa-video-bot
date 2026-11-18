@@ -4,7 +4,10 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ROOT } from './config.js';
+import crypto from 'node:crypto';
+import { ROOT, cfg } from './config.js';
+import { sceneHtml } from './compose.js';
+import { basicDesign } from './scenes-basic.js';
 import { run, exists, audioDuration } from './util.js';
 
 export const MOTION_DIR = path.join(ROOT, 'motion');
@@ -225,4 +228,104 @@ export async function runEngineTest(dir, { speakFn, onStage } = {}) {
 export async function doctor(cwd) {
   const r = await hf(['doctor'], { cwd: cwd || MOTION_DIR, allowFail: true, timeoutMs: 120_000 }).catch((e) => ({ stdout: '', stderr: e.message }));
   return (r.stdout + r.stderr).trim().split('\n').slice(0, 25).join('\n');
+}
+
+// =============================================================================================
+// Rendering a real video: one HyperFrames render per scene (cached), then joined with FFmpeg.
+// A scene whose composition did not change (same design, captions, voice) is not rendered again,
+// so a change to one scene re-renders only that scene; a subtitle tweak re-renders without Claude.
+
+const OK_FILE = () => path.join(cfg.dataDir, 'engine-ok.json');
+export const markEngineOk = (info) => fs.writeFile(OK_FILE(), JSON.stringify({ ...info, at: new Date().toISOString() }, null, 2));
+
+/** Which engine renders videos: MOTION_ENGINE=remotion|hyperframes|auto (auto = HyperFrames once `engine test` passed here). */
+export async function motionEngine() {
+  const want = (process.env.MOTION_ENGINE || 'auto').toLowerCase();
+  if (want === 'remotion') return 'remotion';
+  if (await engineMissing()) return 'remotion';
+  if (want === 'hyperframes') return 'hyperframes';
+  return (await exists(OK_FILE())) ? 'hyperframes' : 'remotion';
+}
+
+const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12);
+
+/**
+ * props: output of render.buildProps (scenes with id, audio, durationInFrames, words, visual).
+ * designs: optional { [sceneId]: {body, css, js, fonts} } from the motion designer; missing → basic style.
+ * Returns { full, preview, hd } like renderVideo().
+ */
+export async function renderProject(job, format, { props, settings, designs = {}, onPercent }) {
+  const fps = props.fps || 30;
+  const work = path.join(job.dir, 'render', format);
+  const clipDir = path.join(job.dir, 'clips', format);
+  await fs.mkdir(clipDir, { recursive: true });
+  const gsap = await fs.readFile(gsapFile());
+  const total = props.scenes.reduce((a, s) => a + s.durationInFrames, 0);
+  let doneFrames = 0;
+  const clips = [];
+
+  for (const s of props.scenes) {
+    const duration = s.durationInFrames / fps;
+    const design = designs[s.id] || basicDesign(s.visual, { theme: props.theme, format, lang: props.language, words: s.words });
+    const audioName = s.audio ? `voice${path.extname(s.audio)}` : null;
+    const html = sceneHtml({ scene: { id: s.id, duration, words: s.words, audio: audioName, design }, format, lang: props.language, theme: props.theme, settings });
+    const audioKey = s.audio ? path.basename(s.audio) : 'none'; // audio file names carry their content hash
+    const clip = path.join(clipDir, `${s.id}-${sha(`${html}|${audioKey}`)}.mp4`);
+    if (!(await exists(clip))) {
+      const dir = path.join(work, s.id);
+      await fs.rm(dir, { recursive: true, force: true });
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'index.html'), html);
+      await fs.writeFile(path.join(dir, 'gsap.min.js'), gsap);
+      if (audioName) await fs.copyFile(path.join(job.dir, s.audio), path.join(dir, audioName));
+      const tmp = path.join(dir, 'out.mp4');
+      const r = await hf(['render', '--output', tmp, '--quality', 'looks', '--fps', String(fps)], {
+        cwd: dir,
+        allowFail: true,
+        timeoutMs: 60 * 60_000,
+        onData: (d) => {
+          const m = [...d.matchAll(/(\d{1,3}(?:\.\d+)?)\s?%/g)].pop();
+          if (m) onPercent?.(Math.min(97, Math.round(((doneFrames + (Number(m[1]) / 100) * s.durationInFrames) / total) * 97)));
+        },
+      });
+      if (r.code !== 0 || !(await exists(tmp))) {
+        throw new Error(`HyperFrames could not render scene ${s.id}: ${(r.stderr || r.stdout || '').trim().split('\n').slice(-8).join(' | ').slice(0, 900)}`);
+      }
+      await fs.rename(tmp, clip);
+    }
+    clips.push(clip);
+    doneFrames += s.durationInFrames;
+    onPercent?.(Math.round((doneFrames / total) * 97));
+  }
+
+  // join: same codec settings for every clip, so the video stream is copied; audio re-encoded
+  // to avoid tiny gaps at the joins
+  const full = path.join(job.dir, `${format}.mp4`);
+  const list = path.join(work, 'clips.txt');
+  await fs.mkdir(work, { recursive: true });
+  await fs.writeFile(list, clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-movflags', '+faststart', full], { timeoutMs: 30 * 60_000 });
+  onPercent?.(99);
+
+  const out = await makePreview(full, format, job.dir);
+  if (format === 'long' || !(await exists(path.join(job.dir, 'thumb.png')))) {
+    await run('ffmpeg', ['-y', '-ss', '1.2', '-i', clips[0], '-frames:v', '1', path.join(job.dir, 'thumb.png')], { allowFail: true });
+  }
+  // old clips of scenes that changed are no longer needed
+  const keep = new Set(clips.map((c) => path.basename(c)));
+  for (const f of await fs.readdir(clipDir)) if (!keep.has(f)) await fs.rm(path.join(clipDir, f), { force: true });
+  return out;
+}
+
+/** WhatsApp preview: the full-HD file itself (sent as a document) unless it is very large. */
+export async function makePreview(full, format, dir) {
+  const preview = path.join(dir, `${format}-preview.mp4`);
+  const size = (await fs.stat(full)).size;
+  if (size <= cfg.render.maxHdPreviewMb * 1024 * 1024) {
+    await fs.copyFile(full, preview);
+    return { full, preview, hd: true };
+  }
+  const scale = format === 'short' ? 'scale=720:-2' : 'scale=-2:720';
+  await run('ffmpeg', ['-y', '-i', full, '-vf', scale, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', preview], { timeoutMs: 30 * 60_000 });
+  return { full, preview, hd: false };
 }
