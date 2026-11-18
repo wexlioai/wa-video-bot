@@ -96,8 +96,18 @@ If your Claude usage limit runs out mid-job, the bot tells you and retries every
 - **Claude:** a typical run is 1 planning call plus 1 short call per edit. `CLAUDE_MODEL=sonnet` stretches your plan limit; switch to `opus` if you want better scene choices.
 - **Render time** on 4 OCI cores: very roughly 1–2× real time for 1080p, so a 5-minute video takes about 5–10 minutes. `RENDER_CONCURRENCY` can go up to 4.
 
-## Tweaking the look
-Run `cd video && npm run studio` (open port 3000 over an SSH tunnel) to see the template with sample data. Scene designs are in `video/src/scenes.tsx`, the background is in `Background.tsx` and the captions are in `Captions.tsx`.
+## The motion engine (after `engine test` passes)
+
+1. **Plan**: Claude splits your script into scenes (your words, unchanged).
+2. **Art direction**: Claude writes a creative brief and designs 3 looks (style, colours, fonts, motion) from the script. You see one designed frame per look and pick one, or save a style for next time. Styles: Flat Explainer, Paper Cutout, Editorial, Isometric, Sketchnote, Living Halftone, Technical Drawing, Soft Clay, Documentary Collage, Kinetic Type (`styles/`). Neon, cyberpunk, terminal, glitch, HUD and game-style looks are blocked.
+3. **Voice**, then **format**.
+4. **Motion design**: Claude writes every scene as its own animation, timed to the spoken words. Automatic checks plus a reviewer (Claude Sonnet) score each scene; weak ones are redone.
+5. **Storyboard**: one frame per scene. Render it, type a change, or pick another look.
+6. **Render** scene by scene (cached), music ducked under the voice, soft transitions, loudness -14 LUFS.
+7. **Preview** with: Upload, Quick tweaks (subtitles, voice speed, music, motion), Change something (your words; scene numbers, times like 0:42 or quoted words work), review Suggestions, Change voice/look, Undo (versions).
+8. **Upload**: pick one of 3 designed thumbnails; chapters are added to the description.
+
+Commands: `change music`, `change look`, `forget style`, `engine test`. Settings in `.env`: `MOTION_ENGINE`, `CRITIC_MODEL`, `MUSIC_GENERATE`.
 
 ## Project layout
 ```

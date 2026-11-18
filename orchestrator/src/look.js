@@ -177,5 +177,5 @@ export function savedText(saved) {
 }
 export function tasteText(picks = []) {
   if (!picks.length) return '';
-  return `Looks this person picked before (most recent last), use as a hint to their taste, not a rule:\n${picks.slice(-5).map((p) => `- ${p.styleName}: "${p.name}" (${p.motion})`).join('\n')}`;
+  return `Looks this person picked before (most recent last), use as a hint to their taste, not a rule:\n${picks.slice(-6).map((p) => `- ${p.styleName}: "${p.name}" (${p.motion})${p.uploaded ? ' - published' : ''}`).join('\n')}`;
 }

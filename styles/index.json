@@ -1,18 +1,85 @@
 {
   "_note": "Style library. Only styles with ready=true may be chosen. Each ready style has a skill file with its rules.",
   "styles": [
-    { "id": "flat-explainer", "name": "Flat Explainer", "ready": true, "file": "flat-explainer.md",
-      "look": "clean vector objects, people and icons, smooth morphs, generous space", "fits": "how-to, services, finance basics, health tips, product explainers" },
-    { "id": "paper-cutout", "name": "Paper Cutout Storybook", "ready": true, "file": "paper-cutout.md",
-      "look": "layered cut paper with soft drop shadows, torn edges, props that pop in", "fits": "lessons, stories, habits, kids, values, gentle motivation" },
-    { "id": "editorial", "name": "Editorial Magazine", "ready": true, "file": "editorial.md",
-      "look": "bold serif headlines, strong grids, rules and columns, photo-like cut shapes, print colour", "fits": "news, opinion, business, economics, analysis, biographies" },
-    { "id": "isometric", "name": "Isometric World", "ready": false, "look": "small isometric scenes that build up", "fits": "processes, systems, logistics" },
-    { "id": "sketchnote", "name": "Sketchnote", "ready": false, "look": "marker lines that draw themselves, doodles", "fits": "education, ideas, summaries" },
-    { "id": "halftone", "name": "Living Halftone", "ready": false, "look": "print textures, warm risograph colours", "fits": "history, culture, essays" },
-    { "id": "technical", "name": "Technical Drawing", "ready": false, "look": "line drawings that construct themselves on light paper", "fits": "engineering, products, how things work" },
-    { "id": "clay", "name": "Soft Clay 3D", "ready": false, "look": "rounded clay-like 3D objects", "fits": "wellness, lifestyle, friendly products" },
-    { "id": "collage", "name": "Documentary Collage", "ready": false, "look": "framed or torn-paper collage, map lines", "fits": "true stories, travel, history" },
-    { "id": "kinetic", "name": "Kinetic Type Minimal", "ready": false, "look": "big words moving with the voice, lots of space", "fits": "quotes, motivation, Shorts" }
+    {
+      "id": "flat-explainer",
+      "name": "Flat Explainer",
+      "ready": true,
+      "file": "flat-explainer.md",
+      "look": "clean vector objects, people and icons, smooth morphs, generous space",
+      "fits": "how-to, services, finance basics, health tips, product explainers"
+    },
+    {
+      "id": "paper-cutout",
+      "name": "Paper Cutout Storybook",
+      "ready": true,
+      "file": "paper-cutout.md",
+      "look": "layered cut paper with soft drop shadows, torn edges, props that pop in",
+      "fits": "lessons, stories, habits, kids, values, gentle motivation"
+    },
+    {
+      "id": "editorial",
+      "name": "Editorial Magazine",
+      "ready": true,
+      "file": "editorial.md",
+      "look": "bold serif headlines, strong grids, rules and columns, photo-like cut shapes, print colour",
+      "fits": "news, opinion, business, economics, analysis, biographies"
+    },
+    {
+      "id": "isometric",
+      "name": "Isometric World",
+      "ready": true,
+      "look": "small isometric scenes that build up",
+      "fits": "processes, systems, logistics",
+      "file": "isometric.md"
+    },
+    {
+      "id": "sketchnote",
+      "name": "Sketchnote",
+      "ready": true,
+      "look": "marker lines that draw themselves, doodles",
+      "fits": "education, ideas, summaries",
+      "file": "sketchnote.md"
+    },
+    {
+      "id": "halftone",
+      "name": "Living Halftone",
+      "ready": true,
+      "look": "print textures, warm risograph colours",
+      "fits": "history, culture, essays",
+      "file": "halftone.md"
+    },
+    {
+      "id": "technical",
+      "name": "Technical Drawing",
+      "ready": true,
+      "look": "line drawings that construct themselves on light paper",
+      "fits": "engineering, products, how things work",
+      "file": "technical.md"
+    },
+    {
+      "id": "clay",
+      "name": "Soft Clay 3D",
+      "ready": true,
+      "look": "rounded clay-like 3D objects",
+      "fits": "wellness, lifestyle, friendly products",
+      "file": "clay.md"
+    },
+    {
+      "id": "collage",
+      "name": "Documentary Collage",
+      "ready": true,
+      "look": "framed or torn-paper collage, map lines",
+      "fits": "true stories, travel, history",
+      "file": "collage.md"
+    },
+    {
+      "id": "kinetic",
+      "name": "Kinetic Type Minimal",
+      "ready": true,
+      "look": "big words moving with the voice, lots of space",
+      "fits": "quotes, motivation, Shorts",
+      "file": "kinetic.md"
+    }
   ]
 }

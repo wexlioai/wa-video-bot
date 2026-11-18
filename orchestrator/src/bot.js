@@ -402,8 +402,40 @@ async function changeVideo(job, request) {
   return steps.produce(job);
 }
 
+/** YouTube chapters from the scenes: at least 3, each 10 s or longer, first at 0:00. */
+async function chaptersText(job, plan) {
+  const props = await readJson(path.join(job.dir, 'props.json')).catch(() => null);
+  if (!props) return '';
+  const name = (v = {}, narration = '') => {
+    const t = v.heading || v.label || v.text || v.left?.title || narration;
+    return String(t).replace(/\s+/g, ' ').split(' ').slice(0, 7).join(' ').replace(/[.,:;!?]+$/, '').slice(0, 60);
+  };
+  const raw = [];
+  let t = 0;
+  for (const s of props.scenes) {
+    const ps = plan.scenes.find((x) => x.id === s.id) || {};
+    raw.push({ t, title: name(ps.visual, ps.narration) });
+    t += s.durationInFrames / (props.fps || 30);
+  }
+  const total = t;
+  const ch = [];
+  for (const c of raw) {
+    if (!ch.length) { ch.push({ ...c, t: 0, title: plan.title.slice(0, 60) }); continue; }
+    if (c.t - ch[ch.length - 1].t >= 10 && total - c.t >= 10) ch.push(c);
+  }
+  if (ch.length < 3 || total < 60) return '';
+  const mmss = (x) => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
+  return `\n\n${plan.language === 'ur' ? 'ابواب' : 'Chapters'}:\n${ch.slice(0, 20).map((c) => `${mmss(c.t)} ${c.title}`).join('\n')}`;
+}
+
 /** Upload: for long videos with a designed look, first pick a thumbnail. */
 async function startUpload(job) {
+  const look = await loadLook(job.dir);
+  if (look) { // remember which looks made it to YouTube (taste for the art director)
+    const prefs = await loadPrefs();
+    const pick = [...(prefs.taste?.picks || [])].reverse().find((x) => x.name === look.name);
+    if (pick && !pick.uploaded) { pick.uploaded = true; await savePrefs(prefs); }
+  }
   if (job.formats.includes('long') && !job.thumbChosen && (await loadLook(job.dir))) return runStep(job, 'thumbs');
   return runStep(job, 'publish');
 }
@@ -805,7 +837,7 @@ const steps = {
       job.uploads[f] = await uploadVideo({
         file: job.outputs[f].full,
         title: plan.title,
-        description: plan.description,
+        description: f === 'long' ? `${plan.description}${await chaptersText(job, plan)}` : plan.description,
         tags: plan.tags,
         language: plan.language,
         thumb: f === 'long' ? ((await exists(path.join(job.dir, 'thumb.png'))) ? path.join(job.dir, 'thumb.png') : path.join(job.dir, 'frame.png')) : null,
