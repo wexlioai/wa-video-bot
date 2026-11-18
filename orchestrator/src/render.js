@@ -67,7 +67,8 @@ export async function renderVideo(job, format, onPercent) {
     `--props=${path.join(job.dir, 'props.json')}`,
     `--public-dir=${job.dir}`,
     `--concurrency=${cfg.render.concurrency}`,
-    '--codec=h264', '--crf=20',
+    // quality: sharper frames (default JPEG 80 blurs text edges) and a higher-quality encode
+    '--codec=h264', '--crf=16', '--jpeg-quality=95', '--pixel-format=yuv420p',
   ], {
     cwd: cfg.videoDir,
     timeoutMs: 90 * 60_000,
@@ -79,12 +80,20 @@ export async function renderVideo(job, format, onPercent) {
     },
   });
 
-  // small copy for WhatsApp
-  const scale = format === 'short' ? 'scale=720:-2' : 'scale=-2:720';
-  await run('ffmpeg', [
-    '-y', '-i', full, '-vf', scale, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
-    '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', preview,
-  ], { timeoutMs: 30 * 60_000 });
+  // Preview for WhatsApp: the full-HD file itself, sent as a document so WhatsApp does not
+  // recompress it. Only very large videos get a smaller 720p copy instead.
+  const size = (await fs.stat(full)).size;
+  let hd = size <= cfg.render.maxHdPreviewMb * 1024 * 1024;
+  if (hd) {
+    await fs.copyFile(full, preview);
+  } else {
+    const scale = format === 'short' ? 'scale=720:-2' : 'scale=-2:720';
+    await run('ffmpeg', [
+      '-y', '-i', full, '-vf', scale, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+      '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', preview,
+    ], { timeoutMs: 30 * 60_000 });
+    hd = false;
+  }
 
   if (format === 'long') {
     await remotion([
@@ -92,5 +101,5 @@ export async function renderVideo(job, format, onPercent) {
       `--props=${path.join(job.dir, 'props.json')}`, `--public-dir=${job.dir}`, '--frame=20', '--log=error',
     ], { cwd: cfg.videoDir, allowFail: true });
   }
-  return { full, preview };
+  return { full, preview, hd };
 }

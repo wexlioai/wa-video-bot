@@ -46,7 +46,9 @@ export const cfg = {
     apiKey: req('EVO_API_KEY'),
     instance: process.env.EVO_INSTANCE || 'videobot',
   },
-  ownerNumber: req('OWNER_NUMBER').replace(/\D/g, ''), // e.g. 923001234567
+  // one or more WhatsApp numbers allowed to use the bot, comma separated (first = main owner)
+  ownerNumbers: req('OWNER_NUMBER').split(',').map((x) => x.replace(/\D/g, '')).filter(Boolean),
+  get ownerNumber() { return this.ownerNumbers[0]; },
   // how choices are shown: list (menu button) | poll | text. `use lists` / `use polls` on WhatsApp overrides it.
   choiceStyle: process.env.CHOICE_STYLE || 'list',
   // true  = bot runs on YOUR number, you talk to it in "Message yourself" chat
@@ -83,6 +85,8 @@ export const cfg = {
   render: {
     concurrency: process.env.RENDER_CONCURRENCY || '3',
     captions: (process.env.CAPTIONS || 'true') === 'true',
+    // previews up to this size are sent in full HD as a document (no WhatsApp recompression)
+    maxHdPreviewMb: Number(process.env.MAX_HD_PREVIEW_MB || 90),
   },
 
   yt: {

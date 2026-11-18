@@ -115,11 +115,24 @@ async function main() {
   ]);
   const mode = await choose('Which one?', ['Self chat (my own number)', 'Second number'], e.SELF_CHAT === 'false' ? 2 : 1);
   e.SELF_CHAT = mode === 1 ? 'true' : 'false';
+  const prevOwners = (e.OWNER_NUMBER || '').split(',').map((x) => x.replace(/\D/g, '')).filter(Boolean);
   help(['Your personal WhatsApp number in international format, digits only.', 'Pakistan example: 0300 1234567  →  923001234567']);
-  e.OWNER_NUMBER = await askUntil('Your WhatsApp number', e.OWNER_NUMBER || '', (v) =>
-    /^\d{10,15}$/.test(v.replace(/\D/g, '')) ? null : 'Use digits only with country code, e.g. 923001234567');
-  e.OWNER_NUMBER = e.OWNER_NUMBER.replace(/\D/g, '');
-  let botNumber = e.OWNER_NUMBER;
+  const main = (await askUntil('Your WhatsApp number', prevOwners[0] || '', (v) =>
+    /^\d{10,15}$/.test(v.replace(/\D/g, '')) ? null : 'Use digits only with country code, e.g. 923001234567')).replace(/\D/g, '');
+  let others = [];
+  if (mode === 2) {
+    help([
+      'Other people (or your other numbers) can also send scripts to the bot.',
+      'Each number gets its own videos and saved voice; replies go to whoever sent the script.',
+      'All videos upload to the same YouTube channel. Leave empty for just you.',
+    ]);
+    const o = await askUntil('Other allowed numbers, comma separated (Enter = none)', prevOwners.slice(1).join(','), (v) =>
+      !v.trim() || v.split(',').every((x) => /^\d{10,15}$/.test(x.replace(/\D/g, ''))) ? null : 'Digits with country code, separated by commas');
+    others = o.split(',').map((x) => x.replace(/\D/g, '')).filter((x) => x && x !== main);
+  }
+  e.OWNER_NUMBER = [main, ...others].join(',');
+  if (others.length) ok(`Allowed numbers: ${[main, ...others].join(', ')}`);
+  let botNumber = main;
   if (mode === 2) {
     botNumber = (await askUntil('The bot\'s WhatsApp number (the second number)', e.BOT_NUMBER || '', (v) =>
       /^\d{10,15}$/.test(v.replace(/\D/g, '')) ? null : 'Digits with country code')).replace(/\D/g, '');
@@ -557,7 +570,7 @@ async function selfTest() {
   console.log(up ? c.g('running') : c.r('not responding'));
   if (!up) return process.exit(1);
   const r = await evo(e, 'POST', `/message/sendText/${e.EVO_INSTANCE}`, {
-    number: e.OWNER_NUMBER,
+    number: e.OWNER_NUMBER.split(',')[0],
     text: '🤖 Setup complete! Send me a script (PDF, DOCX or TXT) to make a video. Send *help* for commands.',
   });
   if (r.status < 300) ok('Test message sent to your WhatsApp' + (e.SELF_CHAT === 'true' ? ' ("Message yourself" chat)' : ''));

@@ -2,13 +2,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cfg, ROOT } from './config.js';
 import * as wa from './whatsapp.js';
-import { createJob, currentJob, saveJob, loadPlan } from './jobs.js';
+import { createJob, currentJob, saveJob, loadPlan, userDir, migrateSingleUser } from './jobs.js';
 import { extractText, detectLanguage } from './extract.js';
 import { askClaude, ClaudeLimitError } from './claude.js';
 import { validatePlan } from './plan.js';
 import { buildProps, renderVideo } from './render.js';
 import { uploadVideo } from './youtube.js';
-import { serial, exists, readJson, writeJson } from './util.js';
+import { serial, exists, readJson, writeJson, queueLength } from './util.js';
 import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
 import { startProgress } from './progress.js';
 
@@ -28,15 +28,18 @@ const HELP = [
 
 /** Is a video being made right now? (the supervisor waits for this before restarting) */
 export async function isBusy() {
-  const job = await currentJob();
-  return !!job && BUSY.has(job.state);
+  for (const number of cfg.ownerNumbers) {
+    const job = await wa.chat.run({ number }, currentJob);
+    if (job && BUSY.has(job.state)) return true;
+  }
+  return false;
 }
 
 export const readVersion = async () => (await fs.readFile(path.join(ROOT, 'VERSION'), 'utf8').catch(() => 'dev')).trim();
 
 // ---------------------------------------------------------------------------------------
-// Saved preferences (data/prefs.json): { voices: { en: {id,name,provider,family,mode}, ur: {...} } }
-const PREFS = () => path.join(cfg.dataDir, 'prefs.json');
+// Saved preferences (data/users/<number>/prefs.json): { voices: { en: {id,name,provider,family,mode}, ur: {...} } }
+const PREFS = () => path.join(userDir(), 'prefs.json'); // per person
 const loadPrefs = async () => readJson(PREFS()).catch(() => ({ voices: {} }));
 const savePrefs = (p) => writeJson(PREFS(), p);
 
@@ -281,10 +284,16 @@ const steps = {
     job.state = 'AWAIT_APPROVAL';
     await saveJob(job);
     for (const f of job.formats) {
-      const rel = path.relative(job.dir, job.outputs[f].preview);
-      const size = (await fs.stat(job.outputs[f].preview)).size;
+      const out = job.outputs[f];
+      const rel = path.relative(job.dir, out.preview);
+      const size = (await fs.stat(out.preview)).size;
       const label = f === 'short' ? 'Short 9:16' : 'Long 16:9';
-      await wa.sendVideo(fileUrl(job, rel), `${plan.title} (${label}, ${fmt(seconds)}, preview quality)`, size > 15 * 1024 * 1024, `${f}.mp4`);
+      const mb = (size / 1048576).toFixed(1);
+      const name = `${plan.title.replace(/[^\w\s-]+/g, '').trim().slice(0, 50) || 'video'} (${label.replace(':', 'x')}).mp4`;
+      // HD previews go as a document: WhatsApp keeps the original quality (tap to play)
+      await wa.sendVideo(fileUrl(job, rel),
+        `${plan.title} (${label}, ${fmt(seconds)}${out.hd ? `, full HD, ${mb} MB` : ', 720p preview'})`,
+        out.hd || size > 15 * 1024 * 1024, name);
     }
     if (job.formats.includes('short') && seconds > 180) {
       await wa.sendText('⚠️ The Short is over 3 minutes, so YouTube will treat it as a normal vertical video.');
@@ -356,6 +365,10 @@ const steps = {
 async function runStep(job, name, arg) {
   job.lastStep = { name, arg };
   await saveJob(job);
+  const ahead = queueLength();
+  if (ahead > 0 && cfg.ownerNumbers.length > 1) {
+    await wa.sendText(`⏳ You're in the queue: ${ahead} other video step${ahead > 1 ? 's are' : ' is'} running first. I'll start yours right after.`).catch(() => {});
+  }
   try {
     await serial(() => steps[name](job, arg));
   } catch (e) {
@@ -376,15 +389,15 @@ async function runStep(job, name, arg) {
   }
 }
 
-let limitTimer = null;
+const limitTimers = new Map();
 function scheduleLimitRetry(jobId) {
-  clearTimeout(limitTimer);
-  limitTimer = setTimeout(async () => {
+  clearTimeout(limitTimers.get(jobId));
+  limitTimers.set(jobId, setTimeout(async () => {
     const job = await currentJob();
     if (job?.id === jobId && job.state === 'FAILED' && job.lastStep) {
       await runStep(job, job.lastStep.name, job.lastStep.arg);
     }
-  }, LIMIT_RETRY_MIN * 60_000);
+  }, LIMIT_RETRY_MIN * 60_000));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -437,26 +450,34 @@ async function handleSelect(rowId, title) {
 /** messages.update with aggregated poll results */
 export async function onPollUpdate(d) {
   const selected = (d.pollUpdates || []).filter((o) => (o.voters || []).length).map((o) => o.name);
-  return handleVote(d.keyId || d.key?.id, selected);
+  const pollId = d.keyId || d.key?.id;
+  for (const number of cfg.ownerNumbers) { // the poll belongs to whoever's current question it is
+    const job = await wa.chat.run({ number }, currentJob);
+    if (job?.choice?.pollId === pollId) return wa.chat.run({ number }, () => handleVote(pollId, selected));
+  }
+  return null;
 }
 
 export async function onMessage(data) {
   const k = data?.key || {};
-  if (!wa.isFromOwner(data)) {
-    // log why, so a "nothing happens" problem is visible in data/bot.log
-    if (!wa.isOwnSend(k.id) && !k.fromMe) {
-      console.log(`${ts()} [in] ignored: from ${k.remoteJid} (alt ${k.remoteJidAlt || k.senderPn || '-'}), not OWNER_NUMBER ${cfg.ownerNumber}` +
-        (cfg.selfChat ? ' (SELF_CHAT=true only accepts your "Message yourself" chat)' : ''));
-    }
-    return;
+  const number = wa.ownerOf(data);
+  if (number) return wa.chat.run({ number }, () => handleMessage(data));
+  // log why, so a "nothing happens" problem is visible in the log
+  if (!wa.isOwnSend(k.id) && !k.fromMe) {
+    console.log(`${ts()} [in] ignored: from ${k.remoteJid} (alt ${k.remoteJidAlt || k.senderPn || '-'}), not in OWNER_NUMBER (${cfg.ownerNumbers.join(', ')})` +
+      (cfg.selfChat ? ' (SELF_CHAT=true only accepts your "Message yourself" chat)' : ''));
   }
+  return null;
+}
+
+async function handleMessage(data) {
   const msg = wa.parseMessage(data);
   if (!msg) return;
 
   if (msg.kind === 'poll') return handleVote(msg.pollId, msg.selected);
   if (msg.kind === 'select') return handleSelect(msg.rowId, msg.title);
 
-  console.log(`${ts()} [in] ${msg.kind === 'doc' ? `document ${msg.fileName}` : `text "${msg.text.slice(0, 60)}"`}`);
+  console.log(`${ts()} [in ${wa.currentNumber()}] ${msg.kind === 'doc' ? `document ${msg.fileName}` : `text "${msg.text.slice(0, 60)}"`}`);
 
   if (msg.kind === 'doc') {
     const buf = await wa.downloadMedia(data);
@@ -546,8 +567,9 @@ export async function onMessage(data) {
   return wa.sendText(HELP);
 }
 
-/** On boot: tell the owner if the bot was updated, and mark a job that was mid-step as failed so `retry` works. */
+/** On boot: tell the main owner if the bot was updated, and mark jobs that were mid-step as failed so `retry` works. */
 export async function recover() {
+  await migrateSingleUser();
   const marker = path.join(cfg.dataDir, 'last-version.txt');
   const now = await readVersion();
   const before = (await fs.readFile(marker, 'utf8').catch(() => '')).trim();
@@ -557,12 +579,16 @@ export async function recover() {
   // make sure Evolution also sends poll results (messages.update)
   await wa.ensureWebhook().catch((e) => console.error('webhook update failed', e.message));
 
-  const job = await currentJob();
-  if (job && BUSY.has(job.state)) {
-    job.failedFrom = job.state;
-    job.state = 'FAILED';
-    await saveJob(job);
-    await wa.sendText('The bot restarted while working. Send `retry` to continue.').catch(() => {});
+  for (const number of cfg.ownerNumbers) {
+    await wa.chat.run({ number }, async () => {
+      const job = await currentJob();
+      if (job && BUSY.has(job.state)) {
+        job.failedFrom = job.state;
+        job.state = 'FAILED';
+        await saveJob(job);
+        await wa.sendText('The bot restarted while working. Send `retry` to continue.').catch(() => {});
+      }
+    });
   }
 }
 

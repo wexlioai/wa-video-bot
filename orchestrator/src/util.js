@@ -41,8 +41,12 @@ export const exists = (f) => fs.access(f).then(() => true, () => false);
 
 /** One heavy job at a time (render, TTS, Claude) — this is a personal bot. */
 let chain = Promise.resolve();
+let pending = 0;
+/** How many heavy steps are running or waiting. */
+export const queueLength = () => pending;
 export function serial(fn) {
-  const next = chain.then(fn, fn);
+  pending++;
+  const next = chain.then(fn, fn).finally(() => { pending--; });
   chain = next.catch(() => {});
   return next;
 }

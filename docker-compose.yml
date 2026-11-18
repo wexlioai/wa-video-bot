@@ -2,7 +2,7 @@
 # because Claude Code is logged in to your Claude account there.
 services:
   evolution:
-    image: evoapicloud/evolution-api:latest
+    image: ${EVO_IMAGE:-evoapicloud/evolution-api:latest}   # set EVO_IMAGE in .env to pin a version
     restart: unless-stopped
     depends_on: [postgres, redis]
     ports:

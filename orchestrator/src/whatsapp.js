@@ -1,4 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { cfg } from './config.js';
+
+/** The person this piece of work is for. Everything sent inside chat.run({number}) goes to them. */
+export const chat = new AsyncLocalStorage();
+export const currentNumber = () => chat.getStore()?.number || cfg.ownerNumbers[0];
 
 // IDs of messages the bot sent, so in self-chat mode we never react to our own replies.
 const sentIds = new Set();
@@ -22,7 +27,7 @@ async function evo(method, pathName, body) {
   return data;
 }
 
-const to = () => cfg.ownerNumber;
+const to = () => currentNumber();
 const inst = () => encodeURIComponent(cfg.evo.instance);
 
 export const BOT_TAG = '🤖';
@@ -117,21 +122,22 @@ export async function downloadMedia(data) {
 
 const digits = (jid) => (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 
-/** Is this message one we should handle (from the owner, not our own reply)? */
-export function isFromOwner(data) {
+/** Which allowed number sent this message? null = not for us (or our own reply). */
+export function ownerOf(data) {
   const k = data?.key || {};
-  if (!k.id || isOwnSend(k.id)) return false;
+  if (!k.id || isOwnSend(k.id)) return null;
+  if ((k.remoteJid || '').endsWith('@g.us')) return null; // ignore groups
   const jids = [k.remoteJid, k.remoteJidAlt, k.senderPn, k.participant, data.sender].map(digits);
-  const ownerChat = jids.includes(cfg.ownerNumber);
-  if ((k.remoteJid || '').endsWith('@g.us')) return false; // ignore groups
   if (cfg.selfChat) {
     // Your own "Message yourself" chat: messages are fromMe and the chat is your own number.
     // (Newer WhatsApp may use an @lid jid for self chat; then remoteJidAlt carries the number.)
     const isSelfLid = (k.remoteJid || '').endsWith('@lid') && k.fromMe;
-    return k.fromMe === true && (ownerChat || isSelfLid);
+    return k.fromMe === true && (jids.includes(cfg.ownerNumber) || isSelfLid) ? cfg.ownerNumber : null;
   }
-  return k.fromMe !== true && ownerChat;
+  if (k.fromMe === true) return null;
+  return cfg.ownerNumbers.find((n) => jids.includes(n)) || null;
 }
+export const isFromOwner = (data) => !!ownerOf(data);
 
 /** Returns {kind:'text'} | {kind:'doc'} | {kind:'poll', pollId, selected[]} | {kind:'select', rowId, title} | null */
 export function parseMessage(data) {
