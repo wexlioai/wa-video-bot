@@ -107,6 +107,8 @@ If your Claude usage limit runs out mid-job, the bot tells you and retries every
 7. **Preview** with: Upload, Quick tweaks (subtitles, voice speed, music, motion), Change something (your words; scene numbers, times like 0:42 or quoted words work), review Suggestions, Change voice/look, Undo (versions).
 8. **Upload**: pick one of 3 designed thumbnails; chapters are added to the description.
 
+**Long texts and books**: above 15 minutes of narration the bot first tells you the size (pages, words, hours), splits it into episodes, estimates render time and voice credits, and asks: a series (every word, episode by episode), one ~8-minute summary video, or only the episodes you pick. Before the first full video it makes a ~10-second sample in your chosen look and voice. Series commands: `episodes`, `episode 3`, `upload all`, `stop series`.
+
 Commands: `change music`, `change look`, `forget style`, `engine test`. Settings in `.env`: `MOTION_ENGINE`, `CRITIC_MODEL`, `MUSIC_GENERATE`.
 
 ## Project layout

@@ -39,3 +39,15 @@ export async function currentJob() {
 }
 
 export const loadPlan = (job) => readJson(path.join(job.dir, 'plan.json'));
+
+/** Load any job by id (episodes of a series, the series itself). */
+export async function loadJob(id) {
+  const f = path.join(jobsDir(), id, 'job.json');
+  return (await exists(f)) ? readJson(f) : null;
+}
+
+/** Make another job the person's current one (e.g. "episode 3"). */
+export async function setCurrentJob(id) {
+  await fs.mkdir(userDir(), { recursive: true });
+  await fs.writeFile(currentFile(), id);
+}

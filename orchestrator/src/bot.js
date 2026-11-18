@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cfg, ROOT } from './config.js';
 import * as wa from './whatsapp.js';
-import { createJob, currentJob, saveJob, loadPlan, userDir, migrateSingleUser } from './jobs.js';
+import { createJob, currentJob, saveJob, loadPlan, userDir, migrateSingleUser, loadJob, setCurrentJob } from './jobs.js';
+import { measure, writeSections, loadOutline, episodeText, estimate, fmtHours, LONG_MINUTES, SAMPLE_MINUTES } from './longform.js';
 import { extractText, detectLanguage } from './extract.js';
 import { askClaude, ClaudeLimitError } from './claude.js';
 import { validatePlan } from './plan.js';
@@ -31,7 +32,8 @@ const LIMIT_RETRY_MIN = 30;
 const HELP = [
   'Send me a script as a *PDF, DOCX or TXT* (or paste a long text) and I will make a video.',
   'I ask you everything with tap-to-choose menus (you can also reply with the option number).',
-  'Commands: `status`, `retry`, `undo`, `change voice`, `change look`, `forget voice`, `forget style`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
+  'Commands: `status`, `retry`, `undo`, `change voice`, `change look`, `change music`, `forget voice`, `forget style`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
+  'Books and long texts: I show the size and cost first, then make a series, a summary video or just the parts you pick. Series: `episodes`, `episode 3`, `upload all`, `stop series`.',
 ].join('\n');
 
 /** Is a video being made right now? (the supervisor waits for this before restarting) */
@@ -178,6 +180,28 @@ async function onChoice(job, option) {
       job.thumbChosen = true;
       await saveJob(job);
       return runStep(job, 'publish');
+    case 'sample': {
+      if (v === 'go' || v === 'all') {
+        if (v === 'all') { const parent = await seriesOf(job); if (parent) { parent.series.auto = true; await saveJob(parent); } }
+        job.sampleOk = true;
+        job.storyboardOk = true;
+        return runStep(job, 'produce');
+      }
+      if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
+      if (v === 'voice') return runStep(job, 'voices', { page: 0, after: 'produce' });
+      job.choice = { ...choice };
+      job.state = 'AWAIT_CHOICE';
+      await saveJob(job);
+      return wa.sendText('✏️ Type what to change, for example "warmer colours", "bigger title", "less text on screen".');
+    }
+    case 'longMode':
+      if (v === 'series') { job.state = 'DONE'; await saveJob(job); return startEpisode(job, 1); }
+      if (v === 'summary') return runStep(job, 'condense');
+      if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled.'); }
+      job.choice = { kind: 'part', options: [] };
+      job.state = 'AWAIT_CHOICE';
+      await saveJob(job);
+      return wa.sendText(`📄 Which episodes? Reply with a number or a range, e.g. \`3\` or \`3-5\`.\n\n${job.series.episodes.map((e) => `${e.n}. ${e.title} (${fmtMin(e.minutes)})`).join('\n').slice(0, 3500)}`);
     case 'storyboard':
       if (v === 'go') { job.storyboardOk = true; return runStep(job, 'produce'); }
       if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
@@ -190,6 +214,11 @@ async function onChoice(job, option) {
       return runStep(job, 'produce');
     case 'approve':
       if (v === 'upload') return startUpload(job);
+      if (v === 'next') {
+        const parent = await seriesOf(job);
+        if (parent) return startEpisode(parent, job.episode + 1);
+        return null;
+      }
       if (v === 'voice') return runStep(job, 'voices', { page: 0, after: 'produce' });
       if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
       if (v === 'undo') return undo(job);
@@ -241,6 +270,10 @@ async function askApproval(job) {
   if (job.suggestions?.length) opts.push({ label: `💡 ${job.suggestions.length} suggestion${job.suggestions.length > 1 ? 's' : ''} from the review`, value: 'suggest' });
   opts.push({ label: '🎙 Change voice', value: 'voice' }, { label: '🎨 Change look', value: 'look' });
   if ((job.version || 0) > 1 || (await exists(path.join(job.dir, 'plan.prev.json')))) opts.push({ label: '↩️ Undo last change', value: 'undo' });
+  if (job.seriesId) {
+    const parent = await seriesOf(job);
+    if (parent && job.episode < parent.series.episodes.length) opts.push({ label: `⏭ Next episode (${job.episode + 1}) without uploading`, value: 'next' });
+  }
   opts.push({ label: '🗑 Cancel this video', value: 'cancel' });
   return ask(job, 'approve', 'What next?', opts);
 }
@@ -446,6 +479,18 @@ function afterLook(job, after, inStep) {
   return runStep(job, after === 'produce' ? 'produce' : 'voiceStart');
 }
 
+/** Music (picked once per video, from the library or newly made) and the transition sound. */
+async function ensureSound(job, settings, p) {
+  if (job.music === undefined && settings.music.volume !== 'off') {
+    const look = await loadLook(job.dir);
+    const m = look ? await pickMusic(look.brief?.mood || look.motion, { onStatus: (t) => p?.update(t, true) }).catch(() => null) : null;
+    job.music = m ? path.relative(cfg.dataDir, m.file) : null;
+    await saveJob(job);
+  }
+  const sfx = await whoosh().catch(() => null);
+  return { music: job.music ? path.join(cfg.dataDir, job.music) : null, sfx };
+}
+
 /** Screenshot thumbs/t1-3.html at 1280×720 (after the banned-look check). Returns the numbers that worked. */
 async function shootThumbs(dir) {
   const { chromium } = await import('playwright');
@@ -493,7 +538,25 @@ const steps = {
     const chars = plan.scenes.reduce((a, s) => a + s.narration.length, 0);
     job.estSeconds = Math.round(chars / (plan.language === 'ur' ? 13 : 15));
     await saveJob(job);
+    const parent = await seriesOf(job);
+    if (parent) { // episode titles follow the series
+      plan.title = `${job.episodeTitle} | ${parent.series.title}`.slice(0, 100);
+      plan.description = `${parent.series.title} - Episode ${job.episode} of ${parent.series.episodes.length}: ${job.episodeTitle}\n\n${plan.description}`;
+      await writeJson(path.join(job.dir, 'plan.json'), plan);
+    }
     await wa.sendText(`📝 *${plan.title}*\n${plan.scenes.length} scenes, about ${fmt(job.estSeconds)}.`);
+    if (job.preset) { // next episode: same look, voice and format as the previous one
+      const look = await loadLook(job.dir);
+      if (look) {
+        const pp = look.palette;
+        plan.theme = { bg: pp.bg, bg2: pp.bg2, primary: pp.primary, accent: pp.accent, text: pp.ink };
+        await writeJson(path.join(job.dir, 'plan.json'), plan);
+      }
+      job.voice = job.preset.voice;
+      job.formats = job.preset.formats;
+      await saveJob(job);
+      return steps.produce(job);
+    }
     return steps.direct(job, { after: 'voice' });
   },
 
@@ -609,6 +672,9 @@ const steps = {
     await saveJob(job);
     const plan = await loadPlan(job);
     const settings = await initSettings(job, (await loadPrefs()).defaultSettings);
+    if (job.needSample && !job.sampleOk && (await motionEngine()) === 'hyperframes' && (await loadLook(job.dir))) {
+      return steps.sample(job, plan, settings);
+    }
     const p = await startProgress(`🎙 Recording the voiceover with ${job.voice.name}…`);
     try {
       const { seconds } = await buildProps(job, plan, (i, n) => p.update(`🎙 Recording the voiceover with ${job.voice.name}: scene ${i}/${n}`), { speed: settings.voice.speed });
@@ -672,14 +738,7 @@ const steps = {
         if (engine === 'hyperframes') {
           try {
             const props = await readJson(path.join(job.dir, 'props.json'));
-            if (job.music === undefined && settings.music.volume !== 'off') {
-              const look = await loadLook(job.dir);
-              const m = look ? await pickMusic(look.brief?.mood || look.motion, { onStatus: (t) => p.update(t, true) }).catch(() => null) : null;
-              job.music = m ? path.relative(cfg.dataDir, m.file) : null;
-              await saveJob(job);
-            }
-            const sfx = await whoosh().catch(() => null);
-            const music = job.music ? path.join(cfg.dataDir, job.music) : null;
+            const { music, sfx } = await ensureSound(job, settings, p);
             job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct, music, sfx });
           } catch (e) {
             console.log(`${ts()} hyperframes render failed, falling back to remotion: ${e.message}`);
@@ -719,7 +778,133 @@ const steps = {
       await wa.sendText('⚠️ The Short is over 3 minutes, so YouTube will treat it as a normal vertical video.');
     }
     if (job.qc?.length) await wa.sendText(`🔎 Quality check found something to look at:\n• ${job.qc.join('\n• ')}`);
+    if (job.seriesId) {
+      job.state = 'AWAIT_APPROVAL';
+      await saveJob(job);
+      if (await episodeReady(job)) return null;
+    }
     return askApproval(job);
+  },
+
+  // A ~10-second sample (first scene or two) in the chosen look and voice, before the whole video.
+  async sample(job, plan, settings) {
+    const look = await loadLook(job.dir);
+    const p = await startProgress('🎬 Making a 10-second sample first, so you can check the look and voice before the whole video…');
+    let out;
+    let seconds;
+    try {
+      const scenes = [];
+      let chars = 0;
+      for (const sc of plan.scenes) { scenes.push(sc); chars += sc.narration.length; if (chars >= 170 || scenes.length >= 2) break; }
+      const sub = { ...plan, scenes };
+      await buildProps(job, sub, null, { speed: settings.voice.speed });
+      const props = await readJson(path.join(job.dir, 'props.json'));
+      seconds = props.scenes.reduce((a, x) => a + x.durationInFrames, 0) / (props.fps || 30);
+      await p.update('🎬 Designing and animating the sample…', true);
+      const d = await designScenes(job, { plan: sub, props, look, formats: job.formats });
+      const { music, sfx } = await ensureSound(job, settings, p);
+      await p.update('🎬 Rendering the sample…', true);
+      out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx });
+      await p.done(`🎬 Sample ready (took ${p.elapsed()}).`);
+    } catch (e) {
+      await p.done();
+      throw e;
+    }
+    const parent = await seriesOf(job);
+    await wa.sendVideo(fileUrl(job, path.relative(job.dir, out.preview)),
+      `Sample (${Math.round(seconds)} s): look *${look.name}*, voice *${job.voice?.name || ''}*. The full ${parent ? 'episode' : 'video'} is about ${fmt(job.estSeconds || 0)}.`, true, 'sample.mp4');
+    const opts = parent && job.episode === 1
+      ? [
+        { label: '▶️ Make episode 1 (ask me before each next)', value: 'go' },
+        { label: `⏩ Make all ${parent.series.episodes.length} episodes one after another`, value: 'all' },
+      ]
+      : [{ label: '▶️ Looks good, make the full video', value: 'go' }];
+    return ask(job, 'sample', 'Happy with the look and voice?', [
+      ...opts,
+      { label: '🎨 Different look', value: 'look' },
+      { label: '🎙 Different voice', value: 'voice' },
+      { label: '✏️ Change something (type it)', value: 'edit' },
+    ]);
+  },
+
+  // Long text: split into sections, outline episodes, show the size and costs, ask what to make.
+  async longform(job) {
+    job.state = 'PLANNING';
+    await saveJob(job);
+    const text = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
+    const lang = detectLanguage(text);
+    const m = measure(text, lang);
+    const p = await startProgress('📚 This is a long text. Reading its structure to plan it…');
+    let outline;
+    try {
+      const sections = await writeSections(job.dir, text, lang);
+      await askClaude(job.dir, 'outline', {}, { maxTurns: 15 }).catch((e) => { if (e instanceof ClaudeLimitError) throw e; console.log(`${ts()} outline failed: ${e.message}`); });
+      outline = await loadOutline(job.dir, sections);
+      const mins = (nums) => nums.reduce((a, n) => a + (sections.find((x) => x.n === n)?.minutes || 0), 0);
+      job.kind = 'series';
+      job.language = lang;
+      job.series = {
+        title: outline.title, summary: outline.summary, auto: false,
+        episodes: outline.episodes.map((e) => ({ ...e, minutes: +mins(e.sections).toFixed(1), status: 'todo', jobId: null })),
+      };
+      await saveJob(job);
+    } finally {
+      await p.done();
+    }
+    const eps = job.series.episodes;
+    const all = await estimate(m.minutes);
+    const avg = m.minutes / eps.length;
+    await wa.sendText([
+      `📚 *${job.series.title}*${job.series.summary ? `\n${job.series.summary}` : ''}`,
+      `About ${m.pages.toLocaleString('en-US')} pages, ${m.words.toLocaleString('en-US')} words: *${fmtMin(m.minutes)}* if every word is read.`,
+      `I split it into *${eps.length} episodes* of about ${fmtMin(avg)} each:`,
+      eps.slice(0, 12).map((e) => `${e.n}. ${e.title} (${fmtMin(e.minutes)})`).join('\n') + (eps.length > 12 ? `\n…and ${eps.length - 12} more` : ''),
+      `Making all of it: about *${fmtHours(all.renderHours)}* of rendering on this PC, about *${all.voiceCredits.toLocaleString('en-US')} voice credits*, and many Claude steps (the bot waits when your plan's limit is reached).`,
+    ].join('\n\n'));
+    return ask(job, 'longMode', 'How should I turn it into video?', [
+      { label: `📺 A series: ${eps.length} episodes, every word read`, value: 'series' },
+      { label: '🎯 One summary video (about 8 minutes)', value: 'summary' },
+      { label: '📄 Only some episodes (I pick)', value: 'part' },
+      { label: '🗑 Cancel', value: 'cancel' },
+    ]);
+  },
+
+  // One summary video of a long text: notes per part, then one script (Claude, in steps).
+  async condense(job) {
+    job.state = 'PLANNING';
+    await saveJob(job);
+    const sections = (await readJson(path.join(job.dir, 'sections.json'))).sections;
+    const dir = path.join(job.dir, 'condense');
+    await fs.mkdir(dir, { recursive: true });
+    const batches = [];
+    let cur = [];
+    let words = 0;
+    for (const sc of sections) {
+      if (cur.length && words + sc.words > 12000) { batches.push(cur); cur = []; words = 0; }
+      cur.push(sc);
+      words += sc.words;
+    }
+    if (cur.length) batches.push(cur);
+    const p = await startProgress(`📖 Reading the whole text to write a summary script (${batches.length} part${batches.length > 1 ? 's' : ''})…`);
+    try {
+      for (const [i, b] of batches.entries()) {
+        await p.update(`📖 Reading part ${i + 1}/${batches.length}…`);
+        const text = await episodeText(job.dir, sections, b.map((x) => x.n));
+        await fs.writeFile(path.join(dir, `input-${i + 1}.txt`), text);
+        await askClaude(job.dir, 'condense-notes', { PART: i + 1, PARTS: batches.length }, { maxTurns: 8 });
+      }
+      await p.update('✍️ Writing the summary script…', true);
+      await askClaude(job.dir, 'condense-script', { WORDS: 1200, MINUTES: 8 }, { maxTurns: 12 });
+    } finally {
+      await p.done();
+    }
+    const script = await fs.readFile(path.join(dir, 'script.txt'), 'utf8').catch(() => '');
+    if (script.split(/\s+/).length < 150) throw new Error('The summary script came out empty. Send `retry` to try again.');
+    job.state = 'DONE';
+    await saveJob(job);
+    await fs.writeFile(path.join(job.dir, 'summary-script.txt'), script);
+    later(() => jobFromText(script, { needSample: true, fromLong: job.id }, `🎯 Summary script ready (~${script.split(/\s+/).length} words). Planning the video…`));
+    return null;
   },
 
   async edit(job, request) {
@@ -851,6 +1036,15 @@ const steps = {
     }
     job.state = 'DONE';
     await saveJob(job);
+    const parent = await seriesOf(job);
+    if (parent) {
+      const ep = parent.series.episodes[job.episode - 1];
+      if (ep) ep.status = 'uploaded';
+      await saveJob(parent);
+      if (!job.bulkUpload && !parent.series.auto && job.episode < parent.series.episodes.length) {
+        later(() => startEpisode(parent, job.episode + 1));
+      }
+    }
     const links = job.formats.map((f) => `${f === 'short' ? 'Short' : 'Long'}: ${job.uploads[f]}`).join('\n');
     await wa.sendText(
       `✅ Uploaded (${cfg.yt.privacy}).\n${links}` +
@@ -905,11 +1099,90 @@ async function startJob(saveSource) {
   const job = await createJob();
   await saveSource(job);
   const text = await extractText(job.dir, path.join(job.dir, job.srcName));
-  const words = text.split(/\s+/).filter(Boolean).length;
+  const lang = detectLanguage(text);
+  const m = measure(text, lang);
   await wa.sendText(
-    `📄 Got your script${words ? ` (~${words} words, ${detectLanguage(text) === 'ur' ? 'Urdu' : 'English'})` : ''}.`,
+    `📄 Got your script${m.words ? ` (~${m.words.toLocaleString('en-US')} words, ${lang === 'ur' ? 'Urdu' : 'English'}, about ${fmtMin(m.minutes)} when read aloud)` : ''}.`,
   );
+  if (m.minutes > LONG_MINUTES()) return runStep(job, 'longform');
+  job.needSample = m.minutes > SAMPLE_MINUTES();
+  await saveJob(job);
   await runStep(job, 'plan');
+}
+
+const fmtMin = (min) => (min >= 90 ? `${(min / 60).toFixed(1)} hours` : `${Math.max(1, Math.round(min))} min`);
+
+/** Start a new job from text (an episode, a part, a summary). Runs outside the current step. */
+async function jobFromText(text, fields, note) {
+  const job = await createJob();
+  job.srcName = 'source.txt';
+  Object.assign(job, fields);
+  await fs.writeFile(path.join(job.dir, job.srcName), text);
+  await extractText(job.dir, path.join(job.dir, job.srcName));
+  await saveJob(job);
+  if (note) await wa.sendText(note);
+  return runStep(job, 'plan');
+}
+
+/** Run something after the current step has finished (steps run one at a time). */
+const later = (fn) => setImmediate(() => { fn().catch((e) => console.error('follow-up failed', e)); });
+
+async function seriesOf(job) {
+  return job?.seriesId ? loadJob(job.seriesId) : null;
+}
+
+/** Create and start episode n of a series (copying look, voice and format from the previous episode). */
+async function startEpisode(parent, n) {
+  const ep = parent.series.episodes[n - 1];
+  if (!ep) return finishSeries(parent);
+  const sections = (await readJson(path.join(parent.dir, 'sections.json'))).sections;
+  const text = await episodeText(parent.dir, sections, ep.sections);
+  const prevId = parent.series.episodes[n - 2]?.jobId;
+  const prev = prevId ? await loadJob(prevId) : null;
+  const fields = { seriesId: parent.id, episode: n, episodeTitle: ep.title };
+  if (prev && (await exists(path.join(prev.dir, 'look.json')))) {
+    fields.preset = { voice: prev.voice, formats: prev.formats, from: prev.id };
+    fields.sampleOk = true;
+    fields.storyboardOk = true;
+  } else {
+    fields.needSample = true;
+  }
+  const job = await createJob();
+  ep.jobId = job.id;
+  ep.status = 'making';
+  await saveJob(parent);
+  job.srcName = 'source.txt';
+  Object.assign(job, fields);
+  await fs.writeFile(path.join(job.dir, job.srcName), text);
+  await extractText(job.dir, path.join(job.dir, job.srcName));
+  if (fields.preset) {
+    for (const f of ['look.json', 'settings.json']) await fs.copyFile(path.join(prev.dir, f), path.join(job.dir, f)).catch(() => {});
+    if (prev.music) job.music = prev.music;
+  }
+  await saveJob(job);
+  await wa.sendText(`📺 Episode ${n}/${parent.series.episodes.length}: *${ep.title}* (about ${fmtMin(ep.minutes)})`);
+  return runStep(job, 'plan');
+}
+
+async function finishSeries(parent) {
+  const eps = parent.series.episodes;
+  const ready = eps.filter((e) => ['ready', 'uploaded'].includes(e.status)).length;
+  await wa.sendText(`📺 *${parent.series.title}*: ${ready}/${eps.length} episodes made.\nSend \`episodes\` for the list, \`episode 3\` to open one, or \`upload all\` to upload the ready ones.`);
+}
+
+/** Episode finished rendering: next one (series auto mode) or the normal approval menu. */
+async function episodeReady(job) {
+  const parent = await seriesOf(job);
+  if (!parent) return false;
+  const ep = parent.series.episodes[job.episode - 1];
+  if (ep) ep.status = 'ready';
+  await saveJob(parent);
+  if (!parent.series.auto) return false;
+  const next = job.episode + 1;
+  if (next > parent.series.episodes.length) { await finishSeries(parent); return true; }
+  await wa.sendText(`✅ Episode ${job.episode} is ready (send \`episode ${job.episode}\` later to change or upload it). Starting episode ${next}…`);
+  later(() => startEpisode(parent, next));
+  return true;
 }
 
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -1081,7 +1354,48 @@ async function handleMessage(data) {
     await savePrefs(prefs);
     return wa.sendText('🎙 Saved voice cleared. I will ask you to pick a voice next time.');
   }
+  // ---- series commands
+  const seriesJob = job?.kind === 'series' ? job : await seriesOf(job);
+  if (seriesJob && (lower === 'episodes' || lower === 'series')) {
+    const icon = { todo: '⬜', making: '⏳', ready: '✅', uploaded: '📤' };
+    return wa.sendText(`📺 *${seriesJob.series.title}*\n${seriesJob.series.episodes.map((e) => `${icon[e.status] || '⬜'} ${e.n}. ${e.title}`).join('\n').slice(0, 3800)}\n\n⬜ not made · ⏳ making · ✅ ready · 📤 uploaded\nSend \`episode 3\` to open one, \`upload all\`, or \`stop series\`.`);
+  }
+  const epCmd = lower.match(/^episode\s+(\d{1,4})$/);
+  if (seriesJob && epCmd) {
+    const e = seriesJob.series.episodes[Number(epCmd[1]) - 1];
+    if (!e) return wa.sendText(`There are ${seriesJob.series.episodes.length} episodes.`);
+    if (!e.jobId) {
+      if (await isBusy()) return wa.sendText('Something is being made right now; try again when it is finished.');
+      return startEpisode(seriesJob, e.n);
+    }
+    await setCurrentJob(e.jobId);
+    const ej = await loadJob(e.jobId);
+    if (BUSY.has(ej.state)) return wa.sendText(`Episode ${e.n} is being made right now.`);
+    const out = ej.outputs?.[ej.formats?.[0]];
+    if (out?.preview) await wa.sendVideo(fileUrl(ej, path.relative(ej.dir, out.preview)), `Episode ${e.n}: ${e.title}`, true, `episode-${e.n}.mp4`);
+    return out ? askApproval(ej) : wa.sendText(`Episode ${e.n} is not finished yet (${ej.state.toLowerCase()}). Send \`retry\` to continue it.`);
+  }
+  if (seriesJob && lower === 'stop series') {
+    seriesJob.series.auto = false;
+    await saveJob(seriesJob);
+    return wa.sendText('⏸ The series will not continue by itself. Send `episode N` to make or open an episode.');
+  }
+  if (seriesJob && lower === 'upload all') {
+    const ready = seriesJob.series.episodes.filter((e) => e.status === 'ready' && e.jobId);
+    if (!ready.length) return wa.sendText('No ready episodes to upload.');
+    await wa.sendText(`⬆️ Uploading ${ready.length} episode${ready.length > 1 ? 's' : ''}, one by one…`);
+    for (const e of ready) {
+      const ej = await loadJob(e.jobId);
+      ej.bulkUpload = true;
+      ej.thumbChosen = true;
+      await setCurrentJob(ej.id);
+      await runStep(ej, 'publish');
+    }
+    return finishSeries(await loadJob(seriesJob.id));
+  }
+
   if (lower === 'cancel') {
+    if (seriesJob?.series?.auto) { seriesJob.series.auto = false; await saveJob(seriesJob); }
     if (job) { job.state = 'CANCELLED'; job.choice = null; await saveJob(job); }
     return wa.sendText('Cancelled. Send a new script whenever you like.');
   }
@@ -1145,7 +1459,24 @@ async function handleMessage(data) {
   if (job.choice) {
     const opt = matchOption(job.choice, text);
     if (opt) return onChoice(job, opt);
-    if (job.choice.kind === 'storyboard' && text.trim().length > 2) {
+    if (job.choice.kind === 'part') {
+      const m = text.match(/^\s*(\d{1,4})\s*(?:-|to|–)?\s*(\d{1,4})?\s*$/);
+      const eps = job.series?.episodes || [];
+      if (!m) return wa.sendText('Reply with an episode number or a range, e.g. `3` or `3-5`.');
+      const a = Number(m[1]);
+      const b = Number(m[2] || m[1]);
+      const picked = eps.filter((e) => e.n >= Math.min(a, b) && e.n <= Math.max(a, b));
+      if (!picked.length) return wa.sendText(`Pick between 1 and ${eps.length}.`);
+      job.choice = null;
+      job.state = 'DONE';
+      await saveJob(job);
+      const sections = (await readJson(path.join(job.dir, 'sections.json'))).sections;
+      const partText = await episodeText(job.dir, sections, picked.flatMap((e) => e.sections));
+      const mins = picked.reduce((x, e) => x + e.minutes, 0);
+      return jobFromText(partText, { needSample: mins > SAMPLE_MINUTES(), fromLong: job.id },
+        `📄 Making episode${picked.length > 1 ? `s ${picked[0].n}-${picked[picked.length - 1].n}` : ` ${picked[0].n}`} (about ${fmtMin(mins)}) as one video…`);
+    }
+    if ((job.choice.kind === 'storyboard' || job.choice.kind === 'sample') && text.trim().length > 2) {
       job.choice = null;
       await saveJob(job);
       return runStep(job, 'redesign', { request: text });

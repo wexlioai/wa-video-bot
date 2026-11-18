@@ -262,7 +262,7 @@ const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12
  * designs: optional { [sceneId]: {body, css, js, fonts} } from the motion designer; missing → basic style.
  * Returns { full, preview, hd } like renderVideo().
  */
-export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null }) {
+export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, name = format }) {
   const fps = props.fps || 30;
   const work = path.join(job.dir, 'render', format);
   const clipDir = path.join(job.dir, 'clips', format);
@@ -309,7 +309,7 @@ export async function renderProject(job, format, { props, settings, designs = {}
 
   // join: same codec settings for every clip, so the video stream is copied; audio re-encoded
   // to avoid tiny gaps at the joins
-  const full = path.join(job.dir, `${format}.mp4`);
+  const full = path.join(job.dir, `${name}.mp4`);
   const list = path.join(work, 'clips.txt');
   await fs.mkdir(work, { recursive: true });
   await fs.writeFile(list, clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
@@ -324,19 +324,20 @@ export async function renderProject(job, format, { props, settings, designs = {}
   onPercent?.(99);
   const qc = await checkVideo(full);
 
-  const out = { ...(await makePreview(full, format, job.dir)), qc };
+  const out = { ...(await makePreview(full, format, job.dir, name)), qc };
   if (format === 'long' || !(await exists(path.join(job.dir, 'frame.png')))) {
     await run('ffmpeg', ['-y', '-ss', '1.2', '-i', clips[0], '-frames:v', '1', path.join(job.dir, 'frame.png')], { allowFail: true });
   }
-  // old clips of scenes that changed are no longer needed
+  // old clips of scenes that changed are no longer needed (not after a partial sample render)
+  if (name !== format) return out;
   const keep = new Set(clips.map((c) => path.basename(c)));
   for (const f of await fs.readdir(clipDir)) if (!keep.has(f)) await fs.rm(path.join(clipDir, f), { force: true });
   return out;
 }
 
 /** WhatsApp preview: the full-HD file itself (sent as a document) unless it is very large. */
-export async function makePreview(full, format, dir) {
-  const preview = path.join(dir, `${format}-preview.mp4`);
+export async function makePreview(full, format, dir, name = format) {
+  const preview = path.join(dir, `${name}-preview.mp4`);
   const size = (await fs.stat(full)).size;
   if (size <= cfg.render.maxHdPreviewMb * 1024 * 1024) {
     await fs.copyFile(full, preview);
