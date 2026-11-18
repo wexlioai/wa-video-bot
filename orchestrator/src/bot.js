@@ -13,9 +13,11 @@ import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './v
 import { startProgress } from './progress.js';
 import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk, gsapPath } from './motion.js';
 import { initSettings, snapshotVersion, restoreVersion, loadSettings, saveSettings, applyTweaks, parseTweaks, TWEAKS, normalizeSettings } from './project.js';
-import { styleLibrary } from './look.js';
+import { styleLibrary, bannedIssues } from './look.js';
+import { pathToFileURL } from 'node:url';
 import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText, loadLook } from './look.js';
 import { designScenes, storyboard, acceptEditedScenes, reviewScenes } from './designer.js';
+import { pickMusic, whoosh } from './music.js';
 import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
@@ -171,6 +173,11 @@ async function onChoice(job, option) {
       await saveJob(job);
       return askApproval(job);
     }
+    case 'thumb':
+      await fs.copyFile(v === 'frame' ? path.join(job.dir, 'frame.png') : path.join(job.dir, 'thumbs', `t${v}.png`), path.join(job.dir, 'thumb.png')).catch(() => {});
+      job.thumbChosen = true;
+      await saveJob(job);
+      return runStep(job, 'publish');
     case 'storyboard':
       if (v === 'go') { job.storyboardOk = true; return runStep(job, 'produce'); }
       if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
@@ -182,7 +189,7 @@ async function onChoice(job, option) {
       job.formats = v === 'both' ? ['long', 'short'] : [v];
       return runStep(job, 'produce');
     case 'approve':
-      if (v === 'upload') return runStep(job, 'publish');
+      if (v === 'upload') return startUpload(job);
       if (v === 'voice') return runStep(job, 'voices', { page: 0, after: 'produce' });
       if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
       if (v === 'undo') return undo(job);
@@ -260,11 +267,11 @@ async function undo(job) {
 // ---------------------------------------------------------------------------------------
 // Changes after the preview: quick tweaks (no Claude), review suggestions, typed changes.
 
-const TWEAK_MENU = ['subs-bigger', 'subs-smaller', 'subs-top', 'subs-bottom', 'subs-off', 'subs-style', 'voice-slower', 'voice-faster', 'motion-calmer', 'motion-livelier'];
+const TWEAK_MENU = ['subs-bigger', 'subs-smaller', 'subs-top', 'subs-bottom', 'subs-off', 'voice-slower', 'voice-faster', 'music-quieter', 'music-louder', 'music-off', 'motion-livelier'];
 
 async function askTweaks(job) {
   const s = await loadSettings(job);
-  const now = `Now: subtitles ${s.captions.position === 'off' ? 'off' : `${s.captions.size}, ${s.captions.position}, ${s.captions.style}`}; voice ${s.voice.speed.toFixed(2)}×; motion ${s.motion.energy}.`;
+  const now = `Now: subtitles ${s.captions.position === 'off' ? 'off' : `${s.captions.size}, ${s.captions.position}, ${s.captions.style}`}; voice ${s.voice.speed.toFixed(2)}×; music ${s.music.volume}; motion ${s.motion.energy}.\n(Type "next subtitle style", "calmer motion" or "change music" for more.)`;
   await wa.sendText(`⚡ ${now}`);
   return ask(job, 'tweaks', 'Quick tweaks', [
     ...TWEAK_MENU.map((k) => ({ label: TWEAKS[k].label, value: k })),
@@ -395,10 +402,41 @@ async function changeVideo(job, request) {
   return steps.produce(job);
 }
 
+/** Upload: for long videos with a designed look, first pick a thumbnail. */
+async function startUpload(job) {
+  if (job.formats.includes('long') && !job.thumbChosen && (await loadLook(job.dir))) return runStep(job, 'thumbs');
+  return runStep(job, 'publish');
+}
+
 /** Continue after the look is set. inStep = we are already inside a running step (serial). */
 function afterLook(job, after, inStep) {
   if (inStep) return after === 'produce' ? steps.produce(job) : steps.voiceStart(job);
   return runStep(job, after === 'produce' ? 'produce' : 'voiceStart');
+}
+
+/** Screenshot thumbs/t1-3.html at 1280×720 (after the banned-look check). Returns the numbers that worked. */
+async function shootThumbs(dir) {
+  const { chromium } = await import('playwright');
+  const ok = [];
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    for (const n of [1, 2, 3]) {
+      const f = path.join(dir, 'thumbs', `t${n}.html`);
+      const html = await fs.readFile(f, 'utf8').catch(() => null);
+      if (!html) continue;
+      const issues = bannedIssues(html, { html: true });
+      if (issues.length) { console.log(`thumbnail ${n} rejected: ${issues.join(', ')}`); continue; }
+      await page.goto(pathToFileURL(f).href, { waitUntil: 'networkidle', timeout: 30_000 }).catch(() => {});
+      await page.evaluate(() => document.fonts.ready).catch(() => {});
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: path.join(dir, 'thumbs', `t${n}.png`), clip: { x: 0, y: 0, width: 1280, height: 720 } });
+      ok.push(n);
+    }
+  } finally {
+    await browser.close();
+  }
+  return ok;
 }
 
 const steps = {
@@ -602,7 +640,15 @@ const steps = {
         if (engine === 'hyperframes') {
           try {
             const props = await readJson(path.join(job.dir, 'props.json'));
-            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct });
+            if (job.music === undefined && settings.music.volume !== 'off') {
+              const look = await loadLook(job.dir);
+              const m = look ? await pickMusic(look.brief?.mood || look.motion, { onStatus: (t) => p.update(t, true) }).catch(() => null) : null;
+              job.music = m ? path.relative(cfg.dataDir, m.file) : null;
+              await saveJob(job);
+            }
+            const sfx = await whoosh().catch(() => null);
+            const music = job.music ? path.join(cfg.dataDir, job.music) : null;
+            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct, music, sfx });
           } catch (e) {
             console.log(`${ts()} hyperframes render failed, falling back to remotion: ${e.message}`);
             await wa.sendText(`⚠️ The new motion engine failed on this video, so I'm using the classic one.\n${e.message.slice(0, 300)}`);
@@ -713,6 +759,41 @@ const steps = {
     return steps.produce(job);
   },
 
+  // 3 designed thumbnails to choose from (long videos)
+  async thumbs(job) {
+    job.state = 'DIRECTING';
+    await saveJob(job);
+    const look = await loadLook(job.dir);
+    const style = (await styleLibrary()).find((x) => x.id === look?.style);
+    const p = await startProgress('🖼 Claude is designing 3 thumbnails…');
+    let shots = [];
+    try {
+      await prepareRefs(job.dir);
+      await fs.rm(path.join(job.dir, 'thumbs'), { recursive: true, force: true });
+      await fs.mkdir(path.join(job.dir, 'thumbs'), { recursive: true });
+      await askClaude(job.dir, 'thumbs', { STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 25 });
+      shots = await shootThumbs(job.dir);
+    } catch (e) {
+      if (e instanceof ClaudeLimitError) throw e;
+      console.log(`${ts()} [${job.id}] thumbnails failed: ${e.message}`);
+    } finally {
+      await p.done();
+    }
+    if (!shots.length) {
+      job.thumbChosen = true;
+      await saveJob(job);
+      await wa.sendText('🖼 Thumbnail design did not work this time; using a frame from the video.');
+      return steps.publish(job);
+    }
+    for (const n of shots) await wa.sendImage(fileUrl(job, `thumbs/t${n}.png`), `Thumbnail ${n}`);
+    const hasFrame = await exists(path.join(job.dir, 'frame.png'));
+    if (hasFrame) await wa.sendImage(fileUrl(job, 'frame.png'), 'Or: a frame from the video');
+    return ask(job, 'thumb', 'Which thumbnail?', [
+      ...shots.map((n) => ({ label: `Thumbnail ${n}`, value: n })),
+      ...(hasFrame ? [{ label: 'The video frame', value: 'frame' }] : []),
+    ]);
+  },
+
   async publish(job) {
     job.state = 'UPLOADING';
     await saveJob(job);
@@ -727,7 +808,7 @@ const steps = {
         description: plan.description,
         tags: plan.tags,
         language: plan.language,
-        thumb: f === 'long' ? path.join(job.dir, 'thumb.png') : null,
+        thumb: f === 'long' ? ((await exists(path.join(job.dir, 'thumb.png'))) ? path.join(job.dir, 'thumb.png') : path.join(job.dir, 'frame.png')) : null,
         isShort: f === 'short',
         debugDir: job.dir,
       });
@@ -992,6 +1073,20 @@ async function handleMessage(data) {
     return runStep(job, job.lastStep.name, job.lastStep.arg);
   }
 
+  if (/^(change|new|different) (music|song|track)$/.test(lower) && job.outputs && Object.keys(job.outputs).length) {
+    const look = await loadLook(job.dir);
+    const current = job.music ? path.basename(job.music) : null;
+    const m = await pickMusic(look?.brief?.mood || 'calm', { exclude: current, onStatus: (t) => wa.sendText(t) }).catch(() => null);
+    if (!m) return wa.sendText('No other music available right now.');
+    job.music = path.relative(cfg.dataDir, m.file);
+    const st = await loadSettings(job);
+    if (st.music.volume === 'off') { st.music.volume = 'low'; await saveSettings(job, st); }
+    job.changeNote = 'different music';
+    await saveJob(job);
+    await wa.sendText('🎵 Trying different music…');
+    return runStep(job, 'produce');
+  }
+
   if (/^change (look|style)s?$/.test(lower) && job.language && job.state !== 'FAILED') {
     job.forceLookChoice = true;
     return runStep(job, 'direct', { after: job.outputs && Object.keys(job.outputs).length ? 'produce' : 'voice' });
@@ -1033,7 +1128,7 @@ async function handleMessage(data) {
   }
 
   if (job.state === 'AWAIT_APPROVAL' || job.state === 'FAILED') {
-    if (APPROVE.test(text)) return runStep(job, 'publish');
+    if (APPROVE.test(text)) return startUpload(job);
     if (lower === 'undo') return undo(job);
     job.choice = null;
     const tweaks = (await loadLook(job.dir)) ? parseTweaks(text) : null;

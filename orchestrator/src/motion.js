@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { ROOT, cfg } from './config.js';
 import { sceneHtml } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
+import { mixSound } from './music.js';
 import { run, exists, audioDuration } from './util.js';
 
 export const MOTION_DIR = path.join(ROOT, 'motion');
@@ -256,7 +257,7 @@ const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12
  * designs: optional { [sceneId]: {body, css, js, fonts} } from the motion designer; missing → basic style.
  * Returns { full, preview, hd } like renderVideo().
  */
-export async function renderProject(job, format, { props, settings, designs = {}, onPercent }) {
+export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null }) {
   const fps = props.fps || 30;
   const work = path.join(job.dir, 'render', format);
   const clipDir = path.join(job.dir, 'clips', format);
@@ -307,15 +308,20 @@ export async function renderProject(job, format, { props, settings, designs = {}
   const list = path.join(work, 'clips.txt');
   await fs.mkdir(work, { recursive: true });
   await fs.writeFile(list, clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
-  // join, and bring the loudness to YouTube's -14 LUFS in the same pass
-  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'copy',
-    '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-movflags', '+faststart', full], { timeoutMs: 30 * 60_000 });
+  // join, then mix music (ducked under the voice) + whooshes at the cuts, loudness to -14 LUFS
+  const joined = path.join(work, 'joined.mp4');
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', joined], { timeoutMs: 30 * 60_000 });
+  const cuts = [];
+  let acc = 0;
+  for (const s of props.scenes.slice(0, -1)) { acc += s.durationInFrames / fps; cuts.push(acc); }
+  await mixSound(joined, full, { music, volume: settings.music?.volume || 'low', cuts, sfx });
+  await fs.rm(joined, { force: true });
   onPercent?.(99);
   const qc = await checkVideo(full);
 
   const out = { ...(await makePreview(full, format, job.dir)), qc };
-  if (format === 'long' || !(await exists(path.join(job.dir, 'thumb.png')))) {
-    await run('ffmpeg', ['-y', '-ss', '1.2', '-i', clips[0], '-frames:v', '1', path.join(job.dir, 'thumb.png')], { allowFail: true });
+  if (format === 'long' || !(await exists(path.join(job.dir, 'frame.png')))) {
+    await run('ffmpeg', ['-y', '-ss', '1.2', '-i', clips[0], '-frames:v', '1', path.join(job.dir, 'frame.png')], { allowFail: true });
   }
   // old clips of scenes that changed are no longer needed
   const keep = new Set(clips.map((c) => path.basename(c)));

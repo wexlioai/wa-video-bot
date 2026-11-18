@@ -68,6 +68,7 @@ export const TWEAKS = {
   'music-louder': { label: 'Music louder', apply: (s) => { s.music.volume = step(LEVELS, s.music.volume, 1); } },
   'music-quieter': { label: 'Music quieter', apply: (s) => { s.music.volume = step(LEVELS, s.music.volume, -1); } },
   'music-off': { label: 'No music', apply: (s) => { s.music.volume = 'off'; } },
+  'music-on': { label: 'Music back on', apply: (s) => { if (s.music.volume === 'off') s.music.volume = 'low'; } },
   'motion-calmer': { label: 'Calmer motion', apply: (s) => { s.motion.energy = s.motion.energy === 'lively' ? 'normal' : 'calm'; } },
   'motion-livelier': { label: 'Livelier motion', apply: (s) => { s.motion.energy = s.motion.energy === 'calm' ? 'normal' : 'lively'; } },
 };

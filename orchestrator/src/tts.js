@@ -19,13 +19,13 @@ function edgeRate(speed) {
 
 // ---------------------------------------------------------------- OpenSpeaker
 // Docs: https://openspeaker.ai/app/api-document  (v3 TTS is async: submit -> poll task -> download)
-const OS_API = 'https://api.openspeaker.ai';
+export const OS_API = 'https://api.openspeaker.ai';
 const osHeaders = () => ({ 'xi-api-key': cfg.openspeaker.apiKey });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // OpenSpeaker sometimes answers 429 / 5xx ("Task polling temporarily busy") or drops a
 // connection. Those are temporary: wait and try again (up to ~3 minutes) instead of failing.
-async function osJson(url, opts = {}) {
+export async function osJson(url, opts = {}) {
   let wait = 3000;
   for (let attempt = 1; ; attempt++) {
     let r;
