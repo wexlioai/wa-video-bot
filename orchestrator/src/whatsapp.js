@@ -9,7 +9,50 @@ export const currentNumber = () => chat.getStore()?.number || cfg.ownerNumbers[0
 const sentIds = new Set();
 export const isOwnSend = (id) => sentIds.has(id);
 
+// ---------------------------------------------------------------------------------------
+// Mirror of the chat in the terminal / log file: everything the bot sends to WhatsApp is also
+// printed, so the log shows the whole conversation (incoming messages are logged by bot.js).
+const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const fileOf = (url) => { try { return decodeURIComponent(new URL(url).pathname.split('/').pop()); } catch { return 'file'; } };
+const indent = (t) => String(t ?? '').replace(/^🤖 /, '').split('\n').join('\n      ');
+let lastEdit = '';
+function describe(pathName, b = {}) {
+  const kind = pathName.split('/')[2] || pathName;
+  switch (kind) {
+    case 'sendText': return `💬 ${indent(b.text)}`;
+    case 'sendWhatsAppAudio': return `🎧 audio: ${fileOf(b.audio)}`;
+    case 'sendMedia': return `${b.mediatype === 'image' ? '🖼 image' : b.mediatype === 'document' ? '📄 file' : '🎬 video'}: ${fileOf(b.media)}${b.caption ? `\n      ${indent(b.caption)}` : ''}`;
+    case 'sendPoll': return `📊 poll${b.selectableCount > 1 ? ' (tick several)' : ''}: ${b.name}\n      ${(b.values || []).join('\n      ')}`;
+    case 'sendList': return `📋 menu: ${b.title}\n      ${(b.sections?.[0]?.rows || []).map((r) => r.title).join('\n      ')}`;
+    case 'updateMessage': {
+      const t = indent(b.text);
+      if (t === lastEdit) return null; // progress edits repeat; log only changes
+      lastEdit = t;
+      return `✏️ (updated) ${t}`;
+    }
+    default: return null; // presence, webhook setup, etc.
+  }
+}
+function mirror(pathName, body, error) {
+  if (!pathName.startsWith('/message/') && !pathName.startsWith('/chat/updateMessage')) return;
+  const d = describe(pathName, body);
+  if (!d) return;
+  const who = body?.number || '';
+  console.log(`${ts()} [out ${who}] ${d}${error ? `\n      ❌ NOT SENT: ${String(error).slice(0, 200)}` : ''}`);
+}
+
 async function evo(method, pathName, body) {
+  try {
+    const data = await evoRaw(method, pathName, body);
+    mirror(pathName, body);
+    return data;
+  } catch (e) {
+    mirror(pathName, body, e.message);
+    throw e;
+  }
+}
+
+async function evoRaw(method, pathName, body) {
   const res = await fetch(`${cfg.evo.url}${pathName}`, {
     method,
     headers: { 'Content-Type': 'application/json', apikey: cfg.evo.apiKey },

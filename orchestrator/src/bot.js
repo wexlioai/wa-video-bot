@@ -1037,7 +1037,7 @@ async function handleMessage(data) {
   if (msg.kind === 'poll') return handleVote(msg.pollId, msg.selected);
   if (msg.kind === 'select') return handleSelect(msg.rowId, msg.title);
 
-  console.log(`${ts()} [in ${wa.currentNumber()}] ${msg.kind === 'doc' ? `document ${msg.fileName}` : `text "${msg.text.slice(0, 60)}"`}`);
+  console.log(`${ts()} [in ${wa.currentNumber()}] ${msg.kind === 'doc' ? `document ${msg.fileName}` : `💬 ${msg.text.slice(0, 1000).split("\n").join("\n      ")}`}`);
 
   if (msg.kind === 'doc') {
     const buf = await wa.downloadMedia(data);
