@@ -48,7 +48,7 @@ At the end you get a WhatsApp message saying *"Setup complete!"*.
 ### Afterwards
 | | Oracle | Windows |
 |---|---|---|
-| Logs | `journalctl -u wa-video-bot -f` | `Get-Content $HOME\wa-video-bot\data\bot.log -Wait` |
+| Logs | `tail -f ~/wa-video-bot/data/logs/bot-$(date -u +%F).log` | `Get-Content (ls $HOME\wa-video-bot\data\logs\*.log \| sort LastWriteTime \| select -Last 1) -Wait -Encoding UTF8` |
 | Change settings | `cd ~/wa-video-bot/orchestrator && node scripts/wizard.js && sudo systemctl restart wa-video-bot` | `cd $HOME\wa-video-bot\orchestrator; node scripts\wizard.js`, then restart task *wa-video-bot* in Task Scheduler |
 | Update the bot | automatic from GitHub (see below) | same |
 

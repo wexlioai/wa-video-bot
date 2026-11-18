@@ -145,7 +145,7 @@ function Main {
 Set-Location '$AppDir\orchestrator'
 New-Item -ItemType Directory -Force -Path '$AppDir\data' | Out-Null
 while (`$true) {
-  & '$nodeExe' src\server.js 2>&1 | ForEach-Object { "`$_" } | Out-File -FilePath '$AppDir\data\bot.log' -Append -Encoding utf8
+  & '$nodeExe' src\server.js 2>&1 | ForEach-Object { "`$_" } | Out-File -FilePath '$AppDir\data\runner.log' -Append -Encoding utf8
   Start-Sleep -Seconds 5
 }
 "@ | Set-Content -Path $runner -Encoding UTF8
@@ -165,7 +165,7 @@ while (`$true) {
 
   Push-Location (Join-Path $AppDir 'orchestrator')
   node scripts\wizard.js --test
-  if ($LASTEXITCODE) { Warn "Self-test failed. Look at the log: Get-Content '$AppDir\data\bot.log' -Tail 50" }
+  if ($LASTEXITCODE) { Warn "Self-test failed. Look at the log in '$AppDir\data\logs'" }
   Pop-Location
 
   $sleep = Read-Host "`nThe bot only works while this PC is on and awake. Turn off sleep when plugged in? (y/n)"
@@ -174,7 +174,7 @@ while (`$true) {
   Write-Host "`nAll done!" -ForegroundColor Green
   Write-Host "  - Send a script on WhatsApp to start. Send 'help' for commands."
   Write-Host "  - Docker Desktop must be running (enable 'Start Docker Desktop when you sign in' in its settings)."
-  Write-Host "  - Log:              Get-Content '$AppDir\data\bot.log' -Wait"
+  Write-Host "  - Log:              Get-Content (ls '$AppDir\data\logs\*.log' | sort LastWriteTime | select -Last 1) -Wait -Encoding UTF8"
   Write-Host "  - Change settings:  cd '$AppDir\orchestrator'; node scripts\wizard.js; then restart task 'wa-video-bot'"
   Write-Host "  - Update the bot:   run this installer again"
 }

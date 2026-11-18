@@ -19,7 +19,24 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const APP = path.join(ROOT, 'orchestrator', 'src', 'app.js');
 const SELF = fileURLToPath(import.meta.url);
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-const log = (m) => console.log(`${ts()} [supervisor] ${m}`);
+
+// Clean UTF-8 log files written by the bot itself (data/logs/bot-YYYY-MM-DD.log, kept 14 days),
+// so they read correctly no matter how Windows / systemd capture the console.
+const LOG_DIR = path.join(ROOT, 'data', 'logs');
+fs.mkdirSync(LOG_DIR, { recursive: true });
+const logFile = () => path.join(LOG_DIR, `bot-${new Date().toISOString().slice(0, 10)}.log`);
+function write(chunk) {
+  process.stdout.write(chunk);
+  try { fs.appendFileSync(logFile(), chunk); } catch {}
+}
+try {
+  const cutoff = Date.now() - 14 * 86_400_000;
+  for (const f of fs.readdirSync(LOG_DIR)) {
+    const p = path.join(LOG_DIR, f);
+    if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true });
+  }
+} catch {}
+const log = (m) => write(`${ts()} [supervisor] ${m}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function envValue(key, def) {
@@ -43,7 +60,9 @@ let crashes = 0;
 
 function start() {
   stopping = false;
-  child = spawn(process.execPath, [APP], { cwd: path.join(ROOT, 'orchestrator'), stdio: 'inherit' });
+  child = spawn(process.execPath, [APP], { cwd: path.join(ROOT, 'orchestrator'), stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', write);
+  child.stderr.on('data', write);
   const started = Date.now();
   child.on('exit', async (code) => {
     child = null;
@@ -106,7 +125,10 @@ setInterval(() => {
 
 function npm(dir, args) {
   return new Promise((resolve) => {
-    const p = spawn('npm', args, { cwd: dir, stdio: 'inherit', shell: true });
+    // one command string (npm is a .cmd on Windows, so it needs a shell)
+    const p = spawn(`npm ${args.join(' ')}`, { cwd: dir, shell: true });
+    p.stdout.on('data', write);
+    p.stderr.on('data', write);
     p.on('exit', (code) => resolve(code));
     p.on('error', () => resolve(-1));
   });
@@ -149,7 +171,7 @@ async function applyChanges() {
 // ---------- automatic updates from GitHub ----------
 function git(args) {
   return new Promise((resolve) => {
-    const p = spawn('git', args, { cwd: ROOT, shell: process.platform === 'win32' });
+    const p = spawn('git', args, { cwd: ROOT });
     let out = '';
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => (out += d));
