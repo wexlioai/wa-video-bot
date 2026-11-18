@@ -1,0 +1,101 @@
+# WhatsApp script → YouTube video bot
+
+Send a script (PDF / DOCX / DOC / TXT, English or Urdu) on WhatsApp and get back voice samples. Pick a voice and a format, then get a finished motion-graphics video with captions. Reply `ok` to upload it to YouTube, or type a change.
+
+```
+WhatsApp ─► Evolution API (Docker) ─► orchestrator (Node, host) ─┬─► Claude Code headless (your Claude plan)
+                                                                 ├─► Microsoft Edge neural voices, free (or ElevenLabs)
+                                                                 ├─► Remotion (renders 16:9 / 9:16)
+                                                                 └─► YouTube Studio (headless Chromium)
+```
+
+**What Claude does:** reads the script (including Urdu PDFs that don't extract cleanly), splits it into scenes, picks a visual and on-screen text for each scene, picks colours, and writes the YouTube title, description and tags. It also applies your change requests. Everything else (downloading, TTS, rendering, uploading) is plain code, so your Claude limit only goes on thinking work.
+
+**How the video is built:** Claude writes `plan.json` (data only) and a fixed Remotion template renders it. There are 7 scene types: title, statement, bullets, big number, quote, compare and bar chart. The template also has an animated background, word-by-word highlighted captions and a progress bar, and Urdu is laid out right-to-left in Noto Nastaliq. Because the plan is data rather than code, renders don't break and edits are small.
+
+---
+
+## Setup: one file, one command
+
+There's a single installer file for each machine. Each one contains the whole project, installs everything, then runs a wizard that **asks only for your credentials and explains where to get each one**. Both are safe to run again later to update the bot or change settings.
+
+### Oracle Cloud server: `setup-oracle.sh`
+Use an **Ubuntu 22.04/24.04** image; both ARM (Ampere) and x86 work.
+```bash
+scp setup-oracle.sh ubuntu@YOUR_SERVER_IP:~/
+ssh ubuntu@YOUR_SERVER_IP
+bash setup-oracle.sh
+```
+
+### Windows 10/11 desktop: `setup-windows.ps1`
+Open **Terminal / PowerShell** in the folder with the file and run:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
+```
+It asks for administrator rights (to install Docker Desktop and add a firewall rule). If Docker Desktop is newly installed and Windows asks for a restart, restart and run the same command again. The bot runs in the background whenever you're logged in, and only while the PC is on and awake.
+
+### What the wizard asks
+| Step | What you need | Where to get it |
+|---|---|---|
+| WhatsApp | your number (e.g. `923001234567`), and whether to use self chat or a second number | — |
+| Voice | **Free Microsoft voices** (no key), **OpenSpeaker** (one key for ElevenLabs, MiniMax, Fish Audio, Edge, Kokoro, Vbee voices) or **ElevenLabs** | OpenSpeaker: log in at openspeaker.ai/app → open **API Document** → **API Key** at the top. ElevenLabs: elevenlabs.io → profile → **API Keys** |
+| Claude | a long-lived login token (about 1 year) from your Pro/Max account | the wizard runs `claude setup-token`: sign in in the browser, click Authorize, paste the `sk-ant-oat01-…` token |
+| YouTube | sign in to your channel's Google account | Windows: a browser window opens. Server: import Chrome cookies, or copy `data\yt-session.json` from your Windows setup |
+| WhatsApp link | your phone | scan the QR **shown in the terminal**, or type the 8-letter pairing code (WhatsApp → Linked devices) |
+
+At the end you get a WhatsApp message saying *"Setup complete!"*.
+
+### Afterwards
+| | Oracle | Windows |
+|---|---|---|
+| Logs | `journalctl -u wa-video-bot -f` | `Get-Content $HOME\wa-video-bot\data\bot.log -Wait` |
+| Change settings | `cd ~/wa-video-bot/orchestrator && node scripts/wizard.js && sudo systemctl restart wa-video-bot` | `cd $HOME\wa-video-bot\orchestrator; node scripts\wizard.js`, then restart task *wa-video-bot* in Task Scheduler |
+| Update the bot | automatic from GitHub (see below) | same |
+
+### Automatic updates
+The bot runs under a small **supervisor** that keeps it running and up to date:
+- **From GitHub.** Every 10 minutes it checks the bot's private GitHub repo. A new version is installed by itself and the bot restarts, and you get a WhatsApp notice "🔄 Bot updated: old → new". The wizard's *Automatic updates* step connects the repo with a read-only token.
+- **Never touches your data.** `.env`, `data/` (jobs, WhatsApp files, YouTube login), `node_modules/` and `.venv/` aren't in git, so updates never touch them.
+- **Never interrupts a video.** If one is being made, the restart waits until it finishes.
+- **Settings changes apply by themselves.** Editing `.env` (or re-running the wizard) restarts the bot automatically, and a changed `package.json` runs `npm install` first.
+- **Prompts and video design** (`prompts/`, `video/src/`) apply to the next video without a restart.
+
+Send `version` to the bot to see which version it's on.
+
+> Run the bot on **one machine at a time**. Both linked to the same WhatsApp would both answer.
+
+**YouTube upload notes:** uploads go through YouTube Studio in a headless browser. If an upload fails, the bot sends you a screenshot of what the browser saw, usually because the login expired (re-run the wizard's YouTube step). To use the official API instead, set `YT_METHOD=api` and run `npm run setup:youtube`.
+
+---
+
+## Using it
+
+| You send | Bot does |
+|---|---|
+| a PDF / DOCX / TXT, or a long pasted text | reads it and sends 3–4 voice samples (~20 s each) |
+| `2 L` / `2 S` / `2 B` | voice 2 as a long 16:9 video / a Short 9:16 / both. Just `2` picks automatically by length |
+| `ok` | uploads to YouTube (headless browser) and sends the link |
+| any other text, e.g. *"scene 3 ka heading chota karo"*, *"colors green kar do"*, *"title: …"* | Claude edits only that part, re-renders and sends a new preview |
+| `voice 3` | re-voices with voice 3 |
+| `undo` | reverts the last change |
+| `retry` / `status` / `cancel` | as the names say |
+
+If your Claude usage limit runs out mid-job, the bot tells you and retries every 30 minutes until the limit resets. Voice audio is cached per scene, so an edit only re-voices the scenes whose spoken words changed.
+
+## Costs and limits
+- **Voice:** free with the Microsoft voices. This uses Edge's read-aloud service unofficially, so it could change without notice; if it ever stops working, re-run the wizard and switch to ElevenLabs. With ElevenLabs, samples cost about 4 × 260 characters and the full voiceover about the script's length.
+- **Claude:** a typical run is 1 planning call plus 1 short call per edit. `CLAUDE_MODEL=sonnet` stretches your plan limit; switch to `opus` if you want better scene choices.
+- **Render time** on 4 OCI cores: very roughly 1–2× real time for 1080p, so a 5-minute video takes about 5–10 minutes. `RENDER_CONCURRENCY` can go up to 4.
+
+## Tweaking the look
+Run `cd video && npm run studio` (open port 3000 over an SSH tunnel) to see the template with sample data. Scene designs are in `video/src/scenes.tsx`, the background is in `Background.tsx` and the captions are in `Captions.tsx`.
+
+## Project layout
+```
+docker-compose.yml        Evolution API + Postgres + Redis
+.env.example              all settings
+orchestrator/src/         server.js (webhook) · bot.js (conversation + steps) · claude.js · tts.js · render.js · youtube.js
+prompts/                  what Claude is told: plan.md, edit.md, fix.md, schema.md
+video/src/                Remotion template (Long 1920×1080, Short 1080×1920)
+data/jobs/<id>/           everything for one video: source, plan.json, audio/, previews, final mp4s
+```

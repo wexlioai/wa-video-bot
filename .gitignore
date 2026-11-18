@@ -1,0 +1,8 @@
+node_modules/
+data/
+.env
+.venv/
+video/out/
+run-bot.ps1
+__pycache__/
+dist/

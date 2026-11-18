@@ -1,0 +1,20 @@
+{
+  "name": "wa-video-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "setup": "node scripts/wizard.js",
+    "setup:youtube": "node scripts/youtube-auth.js",
+    "yt:login": "node scripts/yt-login.js",
+    "yt:cookies": "node scripts/yt-cookies.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "googleapis": "^144.0.0",
+    "playwright": "^1.48.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
