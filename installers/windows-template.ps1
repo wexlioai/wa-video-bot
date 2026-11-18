@@ -117,6 +117,11 @@ function Main {
   npm install --no-audit --no-fund --loglevel=error; if ($LASTEXITCODE) { Die 'npm install failed (video)' }
   npx --yes remotion browser ensure; if ($LASTEXITCODE) { Die 'Remotion browser install failed' }
   Pop-Location
+  if (Test-Path (Join-Path $AppDir 'motion\package.json')) {
+    Push-Location (Join-Path $AppDir 'motion')
+    npm install --no-audit --no-fund --loglevel=error; if ($LASTEXITCODE) { Write-Host '  ! Motion engine (HyperFrames) install failed; the bot retries on its next start' -ForegroundColor Yellow }
+    Pop-Location
+  }
   $venvPy = Join-Path $AppDir '.venv\Scripts\python.exe'
   if (-not (Test-Path $venvPy)) { py -3 -m venv (Join-Path $AppDir '.venv'); if ($LASTEXITCODE) { Die 'Could not create Python environment' } }
   & $venvPy -m pip install -q --upgrade pip edge-tts; if ($LASTEXITCODE) { Die 'Could not install edge-tts (free voices)' }

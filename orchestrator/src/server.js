@@ -95,7 +95,7 @@ async function isBusy() {
 
 // ---------- watching ----------
 const hashOf = (f) => { try { return crypto.createHash('sha1').update(fs.readFileSync(f)).digest('hex'); } catch { return ''; } };
-const PKGS = [path.join(ROOT, 'orchestrator', 'package.json'), path.join(ROOT, 'video', 'package.json')];
+const PKGS = ['orchestrator', 'video', 'motion'].map((d) => path.join(ROOT, d, 'package.json'));
 const pkgHash = Object.fromEntries(PKGS.map((p) => [p, hashOf(p)]));
 const selfHash = hashOf(SELF);
 
@@ -202,6 +202,19 @@ if (everyMin > 0) {
 }
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { await stop(); process.exit(0); });
+
+// A package folder that arrived with an update but was never installed (e.g. a new engine):
+// install it in the background so the bot starts right away.
+(async () => {
+  for (const p of PKGS) {
+    const dir = path.dirname(p);
+    if (fs.existsSync(p) && !fs.existsSync(path.join(dir, 'node_modules'))) {
+      log(`${path.relative(ROOT, dir)}: installing packages (first time, can take a few minutes)`);
+      const code = await npm(dir, ['install', '--no-audit', '--no-fund', '--loglevel=error']);
+      log(`${path.relative(ROOT, dir)}: npm install ${code === 0 ? 'done' : `failed (exit ${code})`}`);
+    }
+  }
+})();
 
 log('starting bot (auto-restarts on updates)');
 start();

@@ -11,6 +11,8 @@ import { uploadVideo } from './youtube.js';
 import { serial, exists, readJson, writeJson, queueLength } from './util.js';
 import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
 import { startProgress } from './progress.js';
+import { engineMissing, runEngineTest, doctor } from './motion.js';
+import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
 const fileUrl = (job, rel) => `${cfg.selfUrl}/files/${cfg.secret}/${job.id}/${toUrl(rel)}`;
@@ -23,11 +25,13 @@ const LIMIT_RETRY_MIN = 30;
 const HELP = [
   'Send me a script as a *PDF, DOCX or TXT* (or paste a long text) and I will make a video.',
   'I ask you everything with tap-to-choose menus (you can also reply with the option number).',
-  'Commands: `status`, `retry`, `undo`, `change voice`, `forget voice`, `use lists` / `use polls`, `cancel`, `version`.',
+  'Commands: `status`, `retry`, `undo`, `change voice`, `forget voice`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
 ].join('\n');
 
 /** Is a video being made right now? (the supervisor waits for this before restarting) */
+let engineBusy = false;
 export async function isBusy() {
+  if (engineBusy) return true;
   for (const number of cfg.ownerNumbers) {
     const job = await wa.chat.run({ number }, currentJob);
     if (job && BUSY.has(job.state)) return true;
@@ -470,6 +474,59 @@ export async function onMessage(data) {
   return null;
 }
 
+// ---------------------------------------------------------------------------------------
+// Phase 0: does the new motion engine (HyperFrames) render on this machine, and how fast?
+async function engineTest() {
+  if (await isBusy()) return wa.sendText('A video is being made right now. Send `engine test` again when it is finished.');
+  const missing = await engineMissing();
+  if (missing) return wa.sendText(`⚠️ I can't run the engine test yet: ${missing}.`);
+  return serial(async () => {
+    engineBusy = true;
+    const p = await startProgress('🧪 Engine test: making a 15-second animated test video…');
+    try {
+      const id = `engine-test-${Date.now()}`;
+      const dir = path.join(cfg.dataDir, 'jobs', id);
+      const saved = (await loadPrefs()).voices?.en;
+      const voiceId = saved?.id || (await voicePage('en', 0)).voices[0]?.id;
+      const r = await runEngineTest(dir, {
+        speakFn: voiceId ? (text, out) => speak(text, voiceId, out, 'en') : null,
+        onStage: (stage, pct) => p.update({
+          voice: '🧪 Engine test: recording the test voice…',
+          lint: '🧪 Engine test: checking the composition…',
+          render: `🧪 Engine test: rendering${pct != null ? `… ${pct}%` : '…'}`,
+        }[stage]),
+      });
+      if (!r.ok) {
+        await p.done('❌ Engine test failed.');
+        const doc = await doctor(dir);
+        return wa.sendText([
+          `Machine: ${r.machine}`,
+          `Error:\n${'```'}${(r.error || 'no output').slice(-1200)}${'```'}`,
+          `Doctor:\n${'```'}${doc.slice(0, 1500)}${'```'}`,
+          'Send me (Claude, in our chat) this message and I will fix it.',
+        ].join('\n\n'));
+      }
+      const speed = r.seconds / r.renderSec;
+      await p.done(`✅ Engine test passed (took ${p.elapsed()}).`);
+      await wa.sendText([
+        '🧪 *Engine test result*',
+        `Machine: ${r.machine}`,
+        `Render: ${r.seconds.toFixed(1)} s of video in ${r.renderSec.toFixed(0)} s (${speed >= 1 ? `${speed.toFixed(2)}× faster than real time` : `${(1 / speed).toFixed(1)}× slower than real time`})`,
+        `A 2-minute video would take about ${Math.ceil((120 / speed) / 60)} min to render.`,
+        `File: ${r.mb.toFixed(1)} MB, full HD`,
+        r.voiceError ? `Voice: failed (${r.voiceError}), rendered without voice` : `Voice: ${r.words} words, captions synced (${r.voiceSec.toFixed(0)} s)`,
+        `Lint: ${r.lintOk ? 'clean' : `warnings\n${r.lint}`}`,
+      ].join('\n'));
+      await wa.sendVideo(`${cfg.selfUrl}/files/${cfg.secret}/${id}/engine-test.mp4`, 'Engine test (HyperFrames, 15 s, full HD)', true, 'engine-test.mp4');
+    } catch (e) {
+      await p.done('❌ Engine test failed.');
+      await wa.sendText(`Engine test error: ${e.message.slice(0, 1500)}`);
+    } finally {
+      engineBusy = false;
+    }
+  });
+}
+
 async function handleMessage(data) {
   const msg = wa.parseMessage(data);
   if (!msg) return;
@@ -499,6 +556,7 @@ async function handleMessage(data) {
 
   if (lower === 'help' || lower === 'menu') return wa.sendText(HELP);
   if (lower === 'version') return wa.sendText(`Bot version ${await readVersion()}`);
+  if (lower === 'engine test' || lower === 'test engine') return engineTest();
   if (lower === 'status') {
     return wa.sendText(job ? `Current video: ${job.id}, state: ${job.state}` : 'No video in progress.');
   }

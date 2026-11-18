@@ -1,0 +1,10 @@
+{
+  "name": "wa-video-motion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Motion engine for the bot: HyperFrames (HTML + CSS + GSAP -> MP4)",
+  "dependencies": {
+    "gsap": "^3.12.5",
+    "hyperframes": "latest"
+  }
+}

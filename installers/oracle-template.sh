@@ -68,6 +68,7 @@ ok "Claude Code $(claude --version 2>/dev/null | head -1)"
 say "4/6 Installing the bot's packages and headless browsers (takes a few minutes)"
 (cd "$APP_DIR/orchestrator" && npm install --no-audit --no-fund --loglevel=error && npx --yes playwright install chromium >/dev/null)
 (cd "$APP_DIR/video" && npm install --no-audit --no-fund --loglevel=error && npx --yes remotion browser ensure >/dev/null)
+[ -f "$APP_DIR/motion/package.json" ] && { (cd "$APP_DIR/motion" && npm install --no-audit --no-fund --loglevel=error) || warn "Motion engine (HyperFrames) install failed; the bot retries on its next start"; }
 # free Microsoft neural voices (edge-tts) in a private Python environment
 [[ -x "$APP_DIR/.venv/bin/python" ]] || python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/python" -m pip install -q --upgrade pip edge-tts

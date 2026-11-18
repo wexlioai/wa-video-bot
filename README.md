@@ -85,6 +85,7 @@ While it works, the bot shows *typing…* and keeps one status message up to dat
 | `forget voice` | clear the saved voice |
 | `use lists` / `use polls` / `use numbers` | how choices are shown |
 | `retry` / `status` / `cancel` / `version` | as the names say |
+| `engine test` | renders a 15-second test with the new motion engine (HyperFrames) and reports how fast this machine renders |
 
 If your Claude usage limit runs out mid-job, the bot tells you and retries every 30 minutes until the limit resets. Voice audio is cached per scene, so an edit only re-voices the scenes whose spoken words changed.
 
