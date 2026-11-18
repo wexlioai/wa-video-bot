@@ -6,8 +6,8 @@ export function run(cmd, args, { cwd, timeoutMs = 0, allowFail = false, input, e
   return new Promise((resolve, reject) => {
     // Windows can only start .cmd/.bat shims through a shell; quote args for cmd.exe
     const shim = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
-    const p = shim
-      ? spawn(`"${cmd}"`, args.map((a) => `"${String(a).replace(/"/g, '""')}"`), { cwd, env: env || process.env, shell: true })
+    const p = shim // one command string (passing args with shell:true is deprecated in Node 24)
+      ? spawn([`"${cmd}"`, ...args.map((a) => `"${String(a).replace(/"/g, '""')}"`)].join(' '), { cwd, env: env || process.env, shell: true })
       : spawn(cmd, args, { cwd, env: env || process.env });
     let stdout = '';
     let stderr = '';

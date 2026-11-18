@@ -24,6 +24,9 @@ export async function engineMissing() {
   return null;
 }
 
+/** Parallel Chrome workers per render (each ~256 MB). HF_WORKERS in .env overrides. */
+export const workers = () => String(Number(process.env.HF_WORKERS) || Math.min(6, Math.max(1, os.cpus().length - 2)));
+
 /** Run the HyperFrames CLI in a project folder. */
 export function hf(args, { cwd, onData, timeoutMs = 30 * 60_000, allowFail = false } = {}) {
   return run(bin(), args, { cwd, onData, timeoutMs, allowFail, env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' } });
@@ -197,7 +200,7 @@ export async function runEngineTest(dir, { speakFn, onStage } = {}) {
   const out = path.join(dir, 'engine-test.mp4');
   const t1 = Date.now();
   let lastPct = -1;
-  const r = await hf(['render', '--output', out, '--quality', 'looks'], {
+  const r = await hf(['render', '--output', out, '--quality', 'looks', '--workers', workers()], {
     cwd: dir,
     allowFail: true,
     onData: (s) => {
@@ -206,6 +209,8 @@ export async function runEngineTest(dir, { speakFn, onStage } = {}) {
     },
   });
   const renderSec = (Date.now() - t1) / 1000;
+  await fs.writeFile(path.join(dir, 'render-output.txt'), `${r.stdout}\n${r.stderr}`).catch(() => {});
+  console.log(`engine test render output (last lines):\n${`${r.stdout}\n${r.stderr}`.trim().split('\n').filter((l) => l.trim()).slice(-15).join('\n')}`);
   const ok = r.code === 0 && (await exists(out));
   const result = {
     ok,
@@ -213,7 +218,7 @@ export async function runEngineTest(dir, { speakFn, onStage } = {}) {
     voiceSec,
     voiceError,
     words: words.length,
-    machine: `${os.platform()} ${os.arch()}, ${os.cpus().length} cores, ${Math.round(os.totalmem() / 2 ** 30)} GB RAM`,
+    machine: `${os.platform()} ${os.arch()}, ${os.cpus().length} cores, ${Math.round(os.totalmem() / 2 ** 30)} GB RAM, ${workers()} render workers`,
     lint: (lint.stdout + lint.stderr).trim().split('\n').slice(-6).join('\n'),
     lintOk: lint.code === 0,
     error: ok ? null : (r.stderr || r.stdout || '').trim().split('\n').slice(-12).join('\n'),
@@ -283,7 +288,7 @@ export async function renderProject(job, format, { props, settings, designs = {}
       await fs.writeFile(path.join(dir, 'gsap.min.js'), gsap);
       if (audioName) await fs.copyFile(path.join(job.dir, s.audio), path.join(dir, audioName));
       const tmp = path.join(dir, 'out.mp4');
-      const r = await hf(['render', '--output', tmp, '--quality', 'looks', '--fps', String(fps)], {
+      const r = await hf(['render', '--output', tmp, '--quality', 'looks', '--fps', String(fps), '--workers', workers()], {
         cwd: dir,
         allowFail: true,
         timeoutMs: 60 * 60_000,

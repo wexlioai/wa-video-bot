@@ -15,7 +15,7 @@ export const LEVELS = ['off', 'low', 'medium', 'high']; // music volume
 
 export function defaultSettings() {
   return {
-    captions: { size: 'M', position: 'bottom', style: 'boxed' },
+    captions: { size: 'L', position: 'bottom', style: 'boxed' },
     voice: { speed: 1.0 },
     music: { volume: 'low' },
     motion: { energy: 'normal' }, // calm | normal | lively
@@ -31,7 +31,7 @@ export function normalizeSettings(s = {}) {
     music: { ...d.music, ...(s.music || {}) },
     motion: { ...d.motion, ...(s.motion || {}) },
   };
-  if (!CAPTION_SIZES.includes(out.captions.size)) out.captions.size = 'M';
+  if (!CAPTION_SIZES.includes(out.captions.size)) out.captions.size = 'L';
   if (!CAPTION_POSITIONS.includes(out.captions.position)) out.captions.position = 'bottom';
   if (!CAPTION_STYLES.includes(out.captions.style)) out.captions.style = 'boxed';
   out.voice.speed = Math.min(1.3, Math.max(0.75, Number(out.voice.speed) || 1));
