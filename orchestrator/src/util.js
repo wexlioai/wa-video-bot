@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 
 /** Run a command, resolve {code, stdout, stderr}. Rejects on non-zero exit unless allowFail. */
-export function run(cmd, args, { cwd, timeoutMs = 0, allowFail = false, input, env } = {}) {
+export function run(cmd, args, { cwd, timeoutMs = 0, allowFail = false, input, env, onData } = {}) {
   return new Promise((resolve, reject) => {
     // Windows can only start .cmd/.bat shims through a shell; quote args for cmd.exe
     const shim = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
@@ -13,8 +13,8 @@ export function run(cmd, args, { cwd, timeoutMs = 0, allowFail = false, input, e
     let stderr = '';
     let timer;
     if (timeoutMs) timer = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
-    p.stdout.on('data', (d) => (stdout += d));
-    p.stderr.on('data', (d) => (stderr += d));
+    p.stdout.on('data', (d) => { stdout += d; if (stdout.length > 2e6) stdout = stdout.slice(-1e6); onData?.(String(d)); });
+    p.stderr.on('data', (d) => { stderr += d; if (stderr.length > 2e6) stderr = stderr.slice(-1e6); onData?.(String(d)); });
     p.on('error', reject);
     p.on('close', (code) => {
       clearTimeout(timer);

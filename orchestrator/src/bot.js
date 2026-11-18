@@ -9,7 +9,8 @@ import { validatePlan } from './plan.js';
 import { buildProps, renderVideo } from './render.js';
 import { uploadVideo } from './youtube.js';
 import { serial, exists, readJson, writeJson } from './util.js';
-import { voicePage, sampleFor, sameService, currentFamily } from './voices.js';
+import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
+import { startProgress } from './progress.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
 const fileUrl = (job, rel) => `${cfg.selfUrl}/files/${cfg.secret}/${job.id}/${toUrl(rel)}`;
@@ -21,8 +22,8 @@ const LIMIT_RETRY_MIN = 30;
 
 const HELP = [
   'Send me a script as a *PDF, DOCX or TXT* (or paste a long text) and I will make a video.',
-  'I ask you everything with tap-to-choose polls (you can also reply with the option number).',
-  'Commands: `status`, `retry`, `undo`, `change voice`, `forget voice`, `cancel`, `version`.',
+  'I ask you everything with tap-to-choose menus (you can also reply with the option number).',
+  'Commands: `status`, `retry`, `undo`, `change voice`, `forget voice`, `use lists` / `use polls`, `cancel`, `version`.',
 ].join('\n');
 
 /** Is a video being made right now? (the supervisor waits for this before restarting) */
@@ -42,16 +43,45 @@ const savePrefs = (p) => writeJson(PREFS(), p);
 // ---------------------------------------------------------------------------------------
 // Choices: a WhatsApp poll (tap to choose). Typing the option number also works.
 
+const BUTTON = { voice: 'Choose voice', keepVoice: 'Choose', format: 'Choose format', approve: 'Options' };
+
+let listRejected = false; // Evolution refused a list once: use polls until the bot restarts
+async function choiceStyle() {
+  const style = (await loadPrefs()).choiceStyle || cfg.choiceStyle;
+  return style === 'list' && listRejected ? 'poll' : style;
+}
+
 async function ask(job, kind, question, options, extra = {}) {
   const labels = options.map((o, i) => `${i + 1}. ${o.label}`);
+  const seq = Date.now().toString(36);
   let pollId = null;
-  try {
-    pollId = await wa.sendPoll(`${question} (tap one, or reply 1-${options.length})`, labels);
-  } catch (e) {
-    console.error('poll failed, falling back to text', e.message);
-    await wa.sendText(`${question}\n${labels.join('\n')}\n\nReply with the number.`);
+  let style = await choiceStyle();
+  if (style === 'list') {
+    try {
+      await wa.sendList(question, `${question}\n(or reply with a number 1-${options.length})`, BUTTON[kind] || 'Choose',
+        options.map((o, i) => ({ title: `${i + 1}. ${o.label}`, description: o.desc || '', rowId: `${seq}:${i}` })));
+      const prefs = await loadPrefs();
+      if ((prefs.listHints || 0) < 3) {
+        prefs.listHints = (prefs.listHints || 0) + 1;
+        await savePrefs(prefs);
+        await wa.sendText("Don't see a menu button above? Reply with the number, or send `use polls`.");
+      }
+    } catch (e) {
+      console.log(`list message rejected by Evolution (${String(e.message).slice(0, 120)}); using polls instead`);
+      listRejected = true;
+      style = 'poll';
+    }
   }
-  job.choice = { kind, pollId, options, ...extra };
+  if (style === 'poll') {
+    try {
+      pollId = await wa.sendPoll(`${question} (tap one, or reply 1-${options.length})`, labels);
+    } catch (e) {
+      console.error('poll failed, falling back to text', e.message);
+      style = 'text';
+    }
+  }
+  if (style === 'text') await wa.sendText(`${question}\n${labels.join('\n')}\n\nReply with the number.`);
+  job.choice = { kind, pollId, seq, options, ...extra };
   job.state = kind === 'approve' ? 'AWAIT_APPROVAL' : 'AWAIT_CHOICE';
   await saveJob(job);
 }
@@ -157,7 +187,12 @@ const steps = {
   async plan(job) {
     job.state = 'PLANNING';
     await saveJob(job);
-    await askClaude(job.dir, 'plan', { SOURCE: job.srcName });
+    const p = await startProgress('🧠 Claude is reading your script and planning the scenes… (usually about a minute)');
+    try {
+      await askClaude(job.dir, 'plan', { SOURCE: job.srcName });
+    } finally {
+      await p.done();
+    }
     let plan = await loadPlan(job).catch(() => null);
     let errs = validatePlan(plan);
     if (errs.length) {
@@ -193,17 +228,30 @@ const steps = {
 
     // generate missing samples, 3 at a time
     const rels = new Array(voices.length);
-    for (let i = 0; i < voices.length; i += 3) {
-      await Promise.all(voices.slice(i, i + 3).map(async (v, k) => { rels[i + k] = await sampleFor(v, lang); }));
+    const missing = (await Promise.all(voices.map((v) => hasSample(v, lang)))).filter((h) => !h).length;
+    const p = missing
+      ? await startProgress(`🎧 Making ${missing} voice sample${missing > 1 ? 's' : ''} for you… (first time only, about ${missing * 10}s; after that they're instant)`)
+      : null;
+    let ready = voices.length - missing;
+    try {
+      for (let i = 0; i < voices.length; i += 2) { // 2 at a time is gentle on the voice service
+        await Promise.all(voices.slice(i, i + 2).map(async (v, k) => {
+          const had = await hasSample(v, lang);
+          rels[i + k] = await sampleFor(v, lang);
+          if (!had) await p?.update(`🎧 Making voice samples… ${++ready}/${voices.length} ready`);
+        }));
+      }
+    } finally {
+      await p?.done();
     }
-    await wa.sendText(`🎧 ${page === 0 ? 'Pick a voice' : 'More voices'}: listen to each sample (about 5 seconds).`);
+    await wa.sendText(`🎧 ${page === 0 ? 'Pick a voice' : 'More voices'}: listen to each sample (about 5 seconds), then choose below.`);
     for (let i = 0; i < voices.length; i++) {
       await wa.sendText(`${i + 1}. *${voices[i].name}*: ${voices[i].desc}`);
       await wa.sendAudio(sampleUrl(rels[i]));
     }
-    const options = voices.map((v) => ({ label: v.name, name: v.name, value: v }));
-    if (more) options.push({ label: '➡️ More voices', value: 'more' });
-    else if (page > 0) options.push({ label: '🔁 Back to first voices', value: 'restart' });
+    const options = voices.map((v) => ({ label: v.name, name: v.name, desc: v.desc, value: v }));
+    if (more) options.push({ label: '➡️ More voices', desc: 'Show the next 6 voices', value: 'more' });
+    else if (page > 0) options.push({ label: '🔁 First voices', desc: 'Back to the first 6 voices', value: 'restart' });
     return ask(job, 'voice', 'Which voice do you like?', options, { page, after });
   },
 
@@ -211,12 +259,25 @@ const steps = {
     job.state = 'PRODUCING';
     await saveJob(job);
     const plan = await loadPlan(job);
-    await wa.sendText(`🎬 Making the voiceover and video (${job.formats.join(' + ')}) with ${job.voice.name}. This takes a few minutes…`);
-    const { seconds } = await buildProps(job, plan);
-    job.seconds = seconds;
-    for (const f of job.formats) {
-      job.outputs[f] = await renderVideo(job, f);
+    const p = await startProgress(`🎙 Recording the voiceover with ${job.voice.name}…`);
+    try {
+      const { seconds } = await buildProps(job, plan, (i, n) => p.update(`🎙 Recording the voiceover with ${job.voice.name}: scene ${i}/${n}`));
+      job.seconds = seconds;
+      for (const [k, f] of job.formats.entries()) {
+        const label = f === 'short' ? 'Short (9:16)' : 'long video (16:9)';
+        const part = job.formats.length > 1 ? ` (${k + 1}/${job.formats.length})` : '';
+        await p.update(`🎬 Rendering the ${label}${part}… 0%`, true);
+        let lastPct = 0;
+        job.outputs[f] = await renderVideo(job, f, (pct) => {
+          if (pct >= lastPct + 10) { lastPct = pct - (pct % 10); p.update(`🎬 Rendering the ${label}${part}… ${lastPct}%`); }
+        });
+      }
+      await p.done(`✅ Video ready (took ${p.elapsed()}). Sending the preview…`);
+    } catch (e) {
+      await p.done();
+      throw e;
     }
+    const seconds = job.seconds;
     job.state = 'AWAIT_APPROVAL';
     await saveJob(job);
     for (const f of job.formats) {
@@ -235,7 +296,13 @@ const steps = {
     job.state = 'EDITING';
     await saveJob(job);
     await fs.copyFile(path.join(job.dir, 'plan.json'), path.join(job.dir, 'plan.prev.json'));
-    const reply = (await askClaude(job.dir, 'edit', { REQUEST: request.replace(/"""/g, '"'), SOURCE: job.srcName })).trim();
+    const p = await startProgress('✏️ Claude is applying your change…');
+    let reply;
+    try {
+      reply = (await askClaude(job.dir, 'edit', { REQUEST: request.replace(/"""/g, '"'), SOURCE: job.srcName })).trim();
+    } finally {
+      await p.done();
+    }
     if (/^CANNOT:/i.test(reply)) {
       await fs.copyFile(path.join(job.dir, 'plan.prev.json'), path.join(job.dir, 'plan.json'));
       job.state = 'AWAIT_APPROVAL';
@@ -256,7 +323,8 @@ const steps = {
     job.state = 'UPLOADING';
     await saveJob(job);
     const plan = await loadPlan(job);
-    await wa.sendText('⬆️ Uploading to YouTube…');
+    const p = await startProgress('⬆️ Uploading to YouTube…');
+    try {
     for (const f of job.formats) {
       if (job.uploads[f]) continue;
       job.uploads[f] = await uploadVideo({
@@ -270,6 +338,9 @@ const steps = {
         debugDir: job.dir,
       });
       await saveJob(job);
+    }
+    } finally {
+      await p.done();
     }
     job.state = 'DONE';
     await saveJob(job);
@@ -325,8 +396,7 @@ async function startJob(saveSource) {
   const text = await extractText(job.dir, path.join(job.dir, job.srcName));
   const words = text.split(/\s+/).filter(Boolean).length;
   await wa.sendText(
-    `Got it, reading your script${words ? ` (~${words} words, ${detectLanguage(text) === 'ur' ? 'Urdu' : 'English'})` : ''}. ` +
-    "I'll be back with voice options in a minute or two.",
+    `📄 Got your script${words ? ` (~${words} words, ${detectLanguage(text) === 'ur' ? 'Urdu' : 'English'})` : ''}.`,
   );
   await runStep(job, 'plan');
 }
@@ -346,6 +416,21 @@ async function handleVote(pollId, selected) {
   const opt = matchOption(job.choice, selected[0], true);
   if (!opt) return wa.sendText('Please reply with the option number.');
   console.log(`${ts()} [in] poll vote "${selected[0]}"`);
+  return onChoice(job, opt);
+}
+
+async function handleSelect(rowId, title) {
+  const job = await currentJob();
+  if (!job?.choice) return;
+  let opt = null;
+  if (rowId && rowId.includes(':')) {
+    const [seq, i] = rowId.split(':');
+    if (seq !== job.choice.seq) return; // tap on an old menu
+    opt = job.choice.options[Number(i)];
+  }
+  opt ||= matchOption(job.choice, title, true);
+  if (!opt) return wa.sendText('Please reply with the option number.');
+  console.log(`${ts()} [in] menu choice "${opt.label}"`);
   return onChoice(job, opt);
 }
 
@@ -369,6 +454,7 @@ export async function onMessage(data) {
   if (!msg) return;
 
   if (msg.kind === 'poll') return handleVote(msg.pollId, msg.selected);
+  if (msg.kind === 'select') return handleSelect(msg.rowId, msg.title);
 
   console.log(`${ts()} [in] ${msg.kind === 'doc' ? `document ${msg.fileName}` : `text "${msg.text.slice(0, 60)}"`}`);
 
@@ -394,6 +480,12 @@ export async function onMessage(data) {
   if (lower === 'version') return wa.sendText(`Bot version ${await readVersion()}`);
   if (lower === 'status') {
     return wa.sendText(job ? `Current video: ${job.id}, state: ${job.state}` : 'No video in progress.');
+  }
+  if (lower === 'use polls' || lower === 'use lists' || lower === 'use numbers') {
+    const prefs = await loadPrefs();
+    prefs.choiceStyle = lower === 'use polls' ? 'poll' : lower === 'use lists' ? 'list' : 'text';
+    await savePrefs(prefs);
+    return wa.sendText(`👍 From now on I'll show choices as ${{ poll: 'polls', list: 'menus (lists)', text: 'numbered text' }[prefs.choiceStyle]}.`);
   }
   if (lower === 'forget voice' || lower === 'reset voice') {
     const prefs = await loadPrefs();

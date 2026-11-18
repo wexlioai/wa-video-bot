@@ -47,6 +47,8 @@ export const cfg = {
     instance: process.env.EVO_INSTANCE || 'videobot',
   },
   ownerNumber: req('OWNER_NUMBER').replace(/\D/g, ''), // e.g. 923001234567
+  // how choices are shown: list (menu button) | poll | text. `use lists` / `use polls` on WhatsApp overrides it.
+  choiceStyle: process.env.CHOICE_STYLE || 'list',
   // true  = bot runs on YOUR number, you talk to it in "Message yourself" chat
   // false = bot runs on a second number, you message that number
   selfChat: (process.env.SELF_CHAT || 'true') === 'true',

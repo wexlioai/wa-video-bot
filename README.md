@@ -70,7 +70,9 @@ Send `version` to the bot to see which version it's on.
 
 ## Using it
 
-Every choice is a **WhatsApp poll**: tap an option (or reply with its number).
+Every choice is a **tap-to-choose menu** (interactive list). If your Evolution version can't send lists, the bot automatically uses **polls** instead; send `use polls` / `use lists` to switch. Replying with the option number always works.
+
+While it works, the bot shows *typing…* and keeps one status message up to date (planning → voice samples 3/6 → recording scene 2/5 → rendering 40% → ✅ ready), adding "still working…" if a step takes long.
 
 | You send / tap | Bot does |
 |---|---|
@@ -81,6 +83,7 @@ Every choice is a **WhatsApp poll**: tap an option (or reply with its number).
 | **"What next?" poll** after the preview | Upload to YouTube / Change something (then type it, e.g. "make scene 3 shorter") / Change voice / Undo / Cancel |
 | `change voice` | pick a different voice (re-renders if a preview exists) |
 | `forget voice` | clear the saved voice |
+| `use lists` / `use polls` / `use numbers` | how choices are shown |
 | `retry` / `status` / `cancel` / `version` | as the names say |
 
 If your Claude usage limit runs out mid-job, the bot tells you and retries every 30 minutes until the limit resets. Voice audio is cached per scene, so an edit only re-voices the scenes whose spoken words changed.

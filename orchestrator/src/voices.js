@@ -13,25 +13,26 @@ export const BATCH = 6;
 const ELEVEN = {
   en: [
     // batch 1: the strongest narrators
+    ['YlMxCLHyPPgCcF5NbKrO', 'Mart', 'Euro-Brit, easy listening'],
     ['JBFqnCBsd6RMkjVDRZzb', 'George', 'warm British storyteller'],
     ['nPczCjzI2devNBz1zQrb', 'Brian', 'deep, resonant American'],
     ['onwK4e9ZLuTAKqWW03F9', 'Daniel', 'steady British broadcaster'],
     ['Xb7hH8MSUJpSbSDYk0k2', 'Alice', 'clear British educator'],
     ['XrExE9yKIg1WjnnlVkGX', 'Matilda', 'knowledgeable, professional'],
-    ['EXAVITQu4vr4xnSDxMaL', 'Sarah', 'mature, confident'],
     // batch 2
+    ['EXAVITQu4vr4xnSDxMaL', 'Sarah', 'mature, confident'],
     ['cjVigY5qzO86Huf0OWal', 'Eric', 'smooth, trustworthy'],
     ['pqHfZKP75CvOlQylNhV4', 'Bill', 'wise, mature'],
     ['iP95p4xoKVk53GoZ742B', 'Chris', 'charming, down-to-earth'],
     ['pFZP5JQG7iQjIQuC4Bku', 'Lily', 'velvety British'],
     ['hpp4J3VqNfWAUOO0d1Us', 'Bella', 'bright, warm'],
-    ['bIHbv24MWmeRgasZH58o', 'Will', 'relaxed, optimistic'],
     // batch 3: professional narrators from the voice library
     ['n0VJsPm60ki3xLLyCLFE', 'Vaughn', 'rich, smooth narrator'],
     ['CHsGFh1S1CR2UcoErJDe', 'Jamie', 'warm British professional'],
     ['EyNKucUOLFyS180FBsMt', 'Declan', 'calm, measured'],
     ['n0WRwrTcEpmeyP31HKGu', 'Ruthie', 'clear, lively'],
     ['z1srV6per6HBc58kB70F', 'Thomas', 'calm American'],
+    ['bIHbv24MWmeRgasZH58o', 'Will', 'relaxed, optimistic'],
     ['bw7U2BkuPkNT7YOsif4t', 'Wren', 'warm instructor'],
   ],
   ur: [
@@ -119,10 +120,14 @@ export async function voicePage(lang, n) {
   }
 }
 
+const sampleRel = (voice, lang) => path.join('voice-samples', cfg.tts.provider, `${voice.id.replace(/[^\w.-]+/g, '_')}-${lang}.mp3`);
+
+/** Has this voice's sample already been made? */
+export const hasSample = (voice, lang) => exists(path.join(cfg.dataDir, sampleRel(voice, lang)));
+
 /** Cached 5-6 second sample of a voice; generated only the first time. Returns a path relative to dataDir. */
 export async function sampleFor(voice, lang) {
-  const safe = voice.id.replace(/[^\w.-]+/g, '_');
-  const rel = path.join('voice-samples', cfg.tts.provider, `${safe}-${lang}.mp3`);
+  const rel = sampleRel(voice, lang);
   const out = path.join(cfg.dataDir, rel);
   if (await exists(out)) return rel;
   await fs.mkdir(path.dirname(out), { recursive: true });

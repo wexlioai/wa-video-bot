@@ -57,6 +57,36 @@ export function ensureWebhook() {
   });
 }
 
+/**
+ * Interactive list ("View options" button that opens a menu). rows: [{title, description, rowId}]
+ * Returns the message id. Throws if Evolution rejects it (caller falls back to a poll).
+ */
+export async function sendList(title, description, buttonText, rows) {
+  const r = await evo('POST', `/message/sendList/${inst()}`, {
+    number: to(),
+    title: title.slice(0, 60),
+    description: description.slice(0, 1000),
+    buttonText: buttonText.slice(0, 20),
+    footerText: 'Tap the button to choose',
+    sections: [{ title: 'Options', rows: rows.map((x) => ({ title: x.title.slice(0, 24), description: (x.description || '').slice(0, 72), rowId: x.rowId })) }],
+  });
+  return r?.key?.id;
+}
+
+/** Edit a text message the bot sent earlier (used for live progress). */
+export async function editText(id, text) {
+  return evo('POST', `/chat/updateMessage/${inst()}`, {
+    number: to(),
+    key: { remoteJid: `${to()}@s.whatsapp.net`, fromMe: true, id },
+    text: `${BOT_TAG} ${text}`,
+  });
+}
+
+/** Show "typing…" in the chat for a few seconds. */
+export function typing(ms = 12000) {
+  return evo('POST', `/chat/sendPresence/${inst()}`, { number: to(), delay: ms, presence: 'composing' });
+}
+
 /** Tap-to-choose poll (WhatsApp Web can't show buttons/lists). Returns the poll message id. */
 export async function sendPoll(question, options) {
   const r = await evo('POST', `/message/sendPoll/${inst()}`, {
@@ -103,9 +133,18 @@ export function isFromOwner(data) {
   return k.fromMe !== true && ownerChat;
 }
 
-/** Returns {kind:'text', text} | {kind:'doc', fileName, mimetype} | {kind:'poll', pollId, selected[]} | null */
+/** Returns {kind:'text'} | {kind:'doc'} | {kind:'poll', pollId, selected[]} | {kind:'select', rowId, title} | null */
 export function parseMessage(data) {
   const m = data?.message || {};
+  // a tap on an interactive list / button
+  const lr = m.listResponseMessage;
+  const ir = m.interactiveResponseMessage?.nativeFlowResponseMessage;
+  const br = m.buttonsResponseMessage;
+  if (lr || ir || br) {
+    let rowId = lr?.singleSelectReply?.selectedRowId || br?.selectedButtonId;
+    if (!rowId && ir?.paramsJson) { try { rowId = JSON.parse(ir.paramsJson).id; } catch {} }
+    return { kind: 'select', rowId, title: lr?.title || br?.selectedDisplayText || '' };
+  }
   const pu = m.pollUpdateMessage;
   if (pu || data?.messageType === 'pollUpdateMessage') {
     // Evolution decrypts the vote and puts the chosen option names in vote.selectedOptions,

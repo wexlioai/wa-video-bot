@@ -14,12 +14,13 @@ const hash = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 1
  * Generate (or reuse cached) voiceover for every scene, then write props.json for Remotion.
  * Audio is cached by narration+voice+model, so an edit only re-voices the scenes it changed.
  */
-export async function buildProps(job, plan) {
+export async function buildProps(job, plan, onScene) {
   const audioDir = path.join(job.dir, 'audio');
   await fs.mkdir(audioDir, { recursive: true });
   const scenes = [];
   let charsSpent = 0;
-  for (const s of plan.scenes) {
+  for (const [idx, s] of plan.scenes.entries()) {
+    await onScene?.(idx + 1, plan.scenes.length);
     const key = hash(`${cfg.tts.provider}|${{ elevenlabs: cfg.eleven.model, openspeaker: cfg.openspeaker.speed }[cfg.tts.provider] ?? cfg.tts.rate}|${job.voice.id}|${s.narration}`);
     const rel = `audio/${s.id}-${key}.mp3`;
     const meta = path.join(job.dir, `audio/${s.id}-${key}.json`);
@@ -56,8 +57,8 @@ async function remotion(args, opts) {
   return run(process.execPath, [cliJs, ...args], opts);
 }
 
-/** format: 'long' | 'short'. Returns {full, preview} absolute paths. */
-export async function renderVideo(job, format) {
+/** format: 'long' | 'short'. Returns {full, preview} absolute paths. onPercent(0-100) reports render progress. */
+export async function renderVideo(job, format, onPercent) {
   const comp = format === 'short' ? 'Short' : 'Long';
   const full = path.join(job.dir, `${format}.mp4`);
   const preview = path.join(job.dir, `${format}-preview.mp4`);
@@ -66,8 +67,17 @@ export async function renderVideo(job, format) {
     `--props=${path.join(job.dir, 'props.json')}`,
     `--public-dir=${job.dir}`,
     `--concurrency=${cfg.render.concurrency}`,
-    '--codec=h264', '--crf=20', '--log=error',
-  ], { cwd: cfg.videoDir, timeoutMs: 90 * 60_000 });
+    '--codec=h264', '--crf=20',
+  ], {
+    cwd: cfg.videoDir,
+    timeoutMs: 90 * 60_000,
+    // Remotion prints "Rendered 120/900" / "Encoded 120/900"; turn the last pair into a percent
+    onData: (chunk) => {
+      const all = [...chunk.matchAll(/(Render|Encod)\w*[^\d\n]{0,40}?(\d+)\s*\/\s*(\d+)/gi)];
+      const m = all[all.length - 1];
+      if (m && Number(m[3]) > 0) onPercent?.(Math.min(99, Math.round((Number(m[2]) / Number(m[3])) * (/encod/i.test(m[1]) ? 10 : 90) + (/encod/i.test(m[1]) ? 90 : 0))));
+    },
+  });
 
   // small copy for WhatsApp
   const scale = format === 'short' ? 'scale=720:-2' : 'scale=-2:720';

@@ -16,15 +16,32 @@ const OS_API = 'https://api.openspeaker.ai';
 const osHeaders = () => ({ 'xi-api-key': cfg.openspeaker.apiKey });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// OpenSpeaker sometimes answers 429 / 5xx ("Task polling temporarily busy") or drops a
+// connection. Those are temporary: wait and try again (up to ~3 minutes) instead of failing.
 async function osJson(url, opts = {}) {
-  const r = await fetch(url, { ...opts, headers: { ...osHeaders(), ...(opts.headers || {}) } });
-  const text = await r.text();
-  let j;
-  try { j = JSON.parse(text); } catch { j = { raw: text }; }
-  if (!r.ok || j.success === false) {
-    throw new Error(`OpenSpeaker ${r.status}: ${(j.message || j.error || j.error_message || text).toString().slice(0, 250)}`);
+  let wait = 3000;
+  for (let attempt = 1; ; attempt++) {
+    let r;
+    let text = '';
+    try {
+      r = await fetch(url, { ...opts, headers: { ...osHeaders(), ...(opts.headers || {}) } });
+      text = await r.text();
+    } catch (e) {
+      if (attempt >= 10) throw new Error(`OpenSpeaker unreachable: ${e.message}`);
+      await sleep(wait); wait = Math.min(wait * 1.6, 30_000); continue;
+    }
+    let j;
+    try { j = JSON.parse(text); } catch { j = { raw: text }; }
+    const transient = r.status === 429 || r.status >= 500;
+    if (transient && attempt < 10) {
+      console.log(`OpenSpeaker ${r.status} (temporary), retrying in ${Math.round(wait / 1000)}s`);
+      await sleep(wait); wait = Math.min(wait * 1.6, 30_000); continue;
+    }
+    if (!r.ok || j.success === false) {
+      throw new Error(`OpenSpeaker ${r.status}: ${(j.message || j.error || j.error_message || text).toString().slice(0, 250)}`);
+    }
+    return j;
   }
-  return j;
 }
 
 async function speakOpenSpeaker(text, voiceId, outFile) {
@@ -40,7 +57,7 @@ async function speakOpenSpeaker(text, voiceId, outFile) {
   let task;
   const t0 = Date.now();
   for (let i = 0; ; i++) {
-    await sleep(i < 5 ? 2000 : 5000);
+    await sleep(i < 4 ? 3000 : 5000); // gentle polling; busy answers are retried inside osJson
     task = await osJson(`${OS_API}/v1/task/${sub.task_id}`);
     if (task.status === 'done') break;
     if (task.status === 'error') throw new Error(`OpenSpeaker task failed: ${task.error_message || 'unknown error'}`);
