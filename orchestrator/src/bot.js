@@ -13,12 +13,13 @@ import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './v
 import { startProgress } from './progress.js';
 import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk } from './motion.js';
 import { initSettings, snapshotVersion } from './project.js';
+import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText } from './look.js';
 import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
 const fileUrl = (job, rel) => `${cfg.selfUrl}/files/${cfg.secret}/${job.id}/${toUrl(rel)}`;
 const sampleUrl = (rel) => `${cfg.selfUrl}/samples/${cfg.secret}/${toUrl(path.relative('voice-samples', rel))}`;
-const BUSY = new Set(['PLANNING', 'SAMPLING', 'PRODUCING', 'EDITING', 'UPLOADING']);
+const BUSY = new Set(['PLANNING', 'DIRECTING', 'SAMPLING', 'PRODUCING', 'EDITING', 'UPLOADING']);
 // whole message must be an approval word, so "ok, but make the title bigger" is an edit
 const APPROVE = /^\s*(ok|okay|yes|approve|approved|publish|upload|haan|han|theek|theek hai|ٹھیک|ٹھیک ہے|ہاں|done)[\s.!👍✅]*$/i;
 const LIMIT_RETRY_MIN = 30;
@@ -26,7 +27,7 @@ const LIMIT_RETRY_MIN = 30;
 const HELP = [
   'Send me a script as a *PDF, DOCX or TXT* (or paste a long text) and I will make a video.',
   'I ask you everything with tap-to-choose menus (you can also reply with the option number).',
-  'Commands: `status`, `retry`, `undo`, `change voice`, `forget voice`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
+  'Commands: `status`, `retry`, `undo`, `change voice`, `change look`, `forget voice`, `forget style`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
 ].join('\n');
 
 /** Is a video being made right now? (the supervisor waits for this before restarting) */
@@ -51,7 +52,7 @@ const savePrefs = (p) => writeJson(PREFS(), p);
 // ---------------------------------------------------------------------------------------
 // Choices: a WhatsApp poll (tap to choose). Typing the option number also works.
 
-const BUTTON = { voice: 'Choose voice', keepVoice: 'Choose', format: 'Choose format', approve: 'Options' };
+const BUTTON = { voice: 'Choose voice', keepVoice: 'Choose', look: 'Choose look', keepLook: 'Choose', format: 'Choose format', approve: 'Options' };
 
 let listRejected = false; // Evolution refused a list once: use polls until the bot restarts
 async function choiceStyle() {
@@ -126,12 +127,39 @@ async function onChoice(job, option) {
         : '👍 I will ask you to pick a voice for every video.');
       return choice.after === 'produce' ? runStep(job, 'produce') : askFormat(job);
     }
+    case 'look': {
+      const d = job.directions.find((x) => x.n === (v === 'surprise' ? job.recommended : v)) || job.directions[0];
+      await applyLook(job.dir, d, job.brief);
+      const prefs = await loadPrefs();
+      prefs.taste ||= { picks: [] };
+      prefs.taste.picks = [...(prefs.taste.picks || []), { name: d.name, style: d.style, styleName: d.styleName, motion: d.motion, at: new Date().toISOString() }].slice(-20);
+      await savePrefs(prefs);
+      await wa.sendText(`🎨 *${d.name}* it is.`);
+      if (!prefs.look) {
+        return ask(job, 'keepLook', `Use the *${d.styleName}* style for your next videos too? (Colours will still be chosen for each script.)`, [
+          { label: `Yes, always ${d.styleName}`, value: 'always' },
+          { label: 'No, show me 3 looks each time', value: 'ask' },
+        ], { after: choice.after, direction: d });
+      }
+      return afterLook(job, choice.after);
+    }
+    case 'keepLook': {
+      const prefs = await loadPrefs();
+      const d = choice.direction;
+      prefs.look = { mode: v, style: d.style, styleName: d.styleName, fonts: { heading: d.fonts.heading.family, body: d.fonts.body.family } };
+      await savePrefs(prefs);
+      await wa.sendText(v === 'always'
+        ? `👍 Next videos will use the *${d.styleName}* style. Send \`change look\` on any video to see other looks, or \`forget style\` to stop.`
+        : '👍 I will show you 3 looks for every video.');
+      return afterLook(job, choice.after);
+    }
     case 'format':
       job.formats = v === 'both' ? ['long', 'short'] : [v];
       return runStep(job, 'produce');
     case 'approve':
       if (v === 'upload') return runStep(job, 'publish');
       if (v === 'voice') return runStep(job, 'voices', { page: 0, after: 'produce' });
+      if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
       if (v === 'undo') return undo(job);
       if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled. Send a new script whenever you like.'); }
       if (v === 'edit') {
@@ -174,6 +202,7 @@ async function askApproval(job) {
     { label: '✅ Upload to YouTube', value: 'upload' },
     { label: '✏️ Change something', value: 'edit' },
     { label: '🎙 Change voice', value: 'voice' },
+    { label: '🎨 Change look', value: 'look' },
   ];
   if (await exists(path.join(job.dir, 'plan.prev.json'))) opts.push({ label: '↩️ Undo last change', value: 'undo' });
   opts.push({ label: '🗑 Cancel this video', value: 'cancel' });
@@ -190,6 +219,12 @@ async function undo(job) {
 
 // ---------------------------------------------------------------------------------------
 // Steps. Each one is retryable: its name is stored in job.lastStep before it runs.
+
+/** Continue after the look is set. inStep = we are already inside a running step (serial). */
+function afterLook(job, after, inStep) {
+  if (inStep) return after === 'produce' ? steps.produce(job) : steps.voiceStart(job);
+  return runStep(job, after === 'produce' ? 'produce' : 'voiceStart');
+}
 
 const steps = {
   async plan(job) {
@@ -214,7 +249,67 @@ const steps = {
     job.estSeconds = Math.round(chars / (plan.language === 'ur' ? 13 : 15));
     await saveJob(job);
     await wa.sendText(`📝 *${plan.title}*\n${plan.scenes.length} scenes, about ${fmt(job.estSeconds)}.`);
+    return steps.direct(job, { after: 'voice' });
+  },
 
+  // Art direction: brief + 3 designed looks (or 1 in the saved style), then the voice / render.
+  async direct(job, { after = 'voice' } = {}) {
+    job.state = 'DIRECTING';
+    await saveJob(job);
+    const prefs = await loadPrefs();
+    const saved = prefs.look?.mode === 'always' && !job.forceLookChoice ? prefs.look : null;
+    job.forceLookChoice = false;
+    const p = await startProgress(saved
+      ? `🎨 Designing the look in your saved style (${saved.styleName})…`
+      : '🎨 Claude is designing 3 looks for your video… (about 2-3 minutes)');
+    let res = null;
+    try {
+      await fs.rm(path.join(job.dir, 'look'), { recursive: true, force: true });
+      await prepareRefs(job.dir);
+      await askClaude(job.dir, 'direct', {
+        SAVED: savedText(saved),
+        TASTE: tasteText(prefs.taste?.picks),
+        COUNT: saved ? 'exactly 1 direction' : 'exactly 3 directions',
+      });
+      res = await loadDirections(job.dir, job.language);
+      if (res.directions.length) {
+        await p.update('🎨 Taking a picture of each look…', true);
+        await shootFrames(res.directions);
+      }
+    } catch (e) {
+      if (e instanceof ClaudeLimitError) throw e;
+      console.log(`${ts()} [${job.id}] art direction failed: ${e.message}`);
+      res = null;
+    } finally {
+      await p.done();
+    }
+    if (res?.dropped.length) console.log(`${ts()} [${job.id}] look checks: ${res.dropped.join('; ')}`);
+    if (!res?.directions.length) {
+      await wa.sendText('🎨 I could not design custom looks this time, so I will use the standard design. Send `change look` later to try again.');
+      return afterLook(job, after, true);
+    }
+    job.brief = res.brief;
+    job.recommended = res.recommended;
+    job.directions = res.directions.map(({ n, name, style, styleName, why, palette, fonts, motion, image }) => ({ n, name, style, styleName, why, palette, fonts, motion, image }));
+    await saveJob(job);
+    if (job.directions.length === 1) {
+      const d = job.directions[0];
+      await applyLook(job.dir, d, job.brief);
+      await wa.sendImage(fileUrl(job, path.relative(job.dir, d.image)), `🎨 *${d.name}* (${d.styleName})\n${d.why}\nSend \`change look\` to see other options.`);
+      return afterLook(job, after, true);
+    }
+    await wa.sendText(`🎨 Here are ${job.directions.length} looks designed for this script. Each picture is how the video will open.`);
+    for (const d of job.directions) {
+      await wa.sendImage(fileUrl(job, path.relative(job.dir, d.image)), `*${d.n}. ${d.name}*\n${d.styleName} · ${d.motion} motion${d.n === job.recommended ? ' · ⭐ my pick' : ''}\n${d.why}`);
+    }
+    return ask(job, 'look', 'Which look do you like?', [
+      ...job.directions.map((d) => ({ label: `${d.name} (${d.styleName})`, value: d.n })),
+      { label: '🎲 Surprise me', value: 'surprise' },
+    ], { after });
+  },
+
+  // Saved voice → straight to the format question; otherwise voice samples.
+  async voiceStart(job) {
     const saved = (await loadPrefs()).voices?.[job.language];
     if (saved?.mode === 'always' && sameService(saved)) {
       job.voice = { id: saved.id, name: saved.name, provider: saved.provider, family: saved.family };
@@ -587,6 +682,12 @@ async function handleMessage(data) {
     await savePrefs(prefs);
     return wa.sendText(`👍 From now on I'll show choices as ${{ poll: 'polls', list: 'menus (lists)', text: 'numbered text' }[prefs.choiceStyle]}.`);
   }
+  if (lower === 'forget style' || lower === 'forget look') {
+    const prefs = await loadPrefs();
+    prefs.look = null;
+    await savePrefs(prefs);
+    return wa.sendText('🎨 Saved style cleared. I will show you 3 looks for the next video.');
+  }
   if (lower === 'forget voice' || lower === 'reset voice') {
     const prefs = await loadPrefs();
     prefs.voices = {};
@@ -615,6 +716,11 @@ async function handleMessage(data) {
   if (lower === 'retry') {
     if (job.state !== 'FAILED' || !job.lastStep) return wa.sendText('Nothing to retry.');
     return runStep(job, job.lastStep.name, job.lastStep.arg);
+  }
+
+  if (/^change (look|style)s?$/.test(lower) && job.language && job.state !== 'FAILED') {
+    job.forceLookChoice = true;
+    return runStep(job, 'direct', { after: job.outputs && Object.keys(job.outputs).length ? 'produce' : 'voice' });
   }
 
   if (/^(change )?voices?$/.test(lower) && job.language && job.state !== 'FAILED') {

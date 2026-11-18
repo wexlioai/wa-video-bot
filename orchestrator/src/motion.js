@@ -247,6 +247,7 @@ export async function motionEngine() {
   return (await exists(OK_FILE())) ? 'hyperframes' : 'remotion';
 }
 
+const readJsonSafe = (f) => fs.readFile(f, 'utf8').then(JSON.parse).catch(() => null);
 const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12);
 
 /**
@@ -261,14 +262,15 @@ export async function renderProject(job, format, { props, settings, designs = {}
   await fs.mkdir(clipDir, { recursive: true });
   const gsap = await fs.readFile(gsapFile());
   const total = props.scenes.reduce((a, s) => a + s.durationInFrames, 0);
+  const look = await readJsonSafe(path.join(job.dir, 'look.json'));
   let doneFrames = 0;
   const clips = [];
 
   for (const s of props.scenes) {
     const duration = s.durationInFrames / fps;
-    const design = designs[s.id] || basicDesign(s.visual, { theme: props.theme, format, lang: props.language, words: s.words });
+    const design = designs[s.id] || basicDesign(s.visual, { theme: props.theme, format, lang: props.language, words: s.words, look });
     const audioName = s.audio ? `voice${path.extname(s.audio)}` : null;
-    const html = sceneHtml({ scene: { id: s.id, duration, words: s.words, audio: audioName, design }, format, lang: props.language, theme: props.theme, settings });
+    const html = sceneHtml({ scene: { id: s.id, duration, words: s.words, audio: audioName, design }, format, lang: props.language, theme: props.theme, settings, motion: look?.motion });
     const audioKey = s.audio ? path.basename(s.audio) : 'none'; // audio file names carry their content hash
     const clip = path.join(clipDir, `${s.id}-${sha(`${html}|${audioKey}`)}.mp4`);
     if (!(await exists(clip))) {

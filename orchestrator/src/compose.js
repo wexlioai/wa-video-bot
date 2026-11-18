@@ -10,6 +10,8 @@
 
 export const FORMATS = { long: { w: 1920, h: 1080 }, short: { w: 1080, h: 1920 } };
 const ENERGY = { calm: 1.35, normal: 1, lively: 0.75 };
+// the look's motion personality also sets the base pace
+const PERSONALITY = { gentle: 1.2, crisp: 0.9, playful: 1, cinematic: 1.3 };
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -98,11 +100,13 @@ function captionsLayer({ words, format, settings, theme, lang, duration }) {
  * scene: { id, duration, words, audio (file name beside index.html or null), design: {body, css, js, fonts?} }
  * fonts: Google Fonts css2 family query, e.g. 'Poppins:wght@400;600;800'
  */
-export function sceneHtml({ scene, format, lang, theme, settings }) {
+export function sceneHtml({ scene, format, lang, theme, settings, motion }) {
   const { w, h } = FORMATS[format];
   const D = scene.duration;
   const rtl = lang === 'ur';
-  const fonts = [scene.design.fonts || 'Poppins:wght@400;600;800', ...(rtl ? ['Noto+Nastaliq+Urdu:wght@400;700'] : [])];
+  const fam = scene.design.families || { heading: 'Poppins', body: 'Poppins' };
+  const given = [scene.design.fonts || 'Poppins:wght@400;600;800'].flat();
+  const fonts = [...new Set([...given, ...(rtl ? ['Noto Nastaliq Urdu:wght@400;700'] : [])])];
   const fontLink = `https://fonts.googleapis.com/css2?${fonts.map((f) => `family=${f.replace(/ /g, '+')}`).join('&')}&display=block`;
   const caps = captionsLayer({ words: scene.words, format, settings, theme, lang, duration: D });
   const vars = Object.entries(theme).map(([k, v]) => `--${k}:${v};`).join('');
@@ -116,7 +120,8 @@ export function sceneHtml({ scene, format, lang, theme, settings }) {
 <style>
   html, body { margin:0; background:${theme.bg}; }
   #root { position:relative; width:${w}px; height:${h}px; overflow:hidden; background:${theme.bg}; color:${theme.text}; ${vars}
-    font-family:${rtl ? "'Noto Nastaliq Urdu', " : ''}Poppins, 'Segoe UI', Arial, sans-serif; }
+    --fh:'${fam.heading}'; --fb:'${fam.body}';
+    font-family:'${fam.body}', ${rtl ? "'Noto Nastaliq Urdu', " : ''}Poppins, 'Segoe UI', Arial, sans-serif; }
   .clip { position:absolute; inset:0; }
   #stage { overflow:hidden; }
   ${scene.design.css || ''}
@@ -134,7 +139,7 @@ ${scene.audio ? `<audio id="voice" data-start="0" data-volume="1" src="./${scene
 <script>
 window.__timelines = window.__timelines || {};
 const tl = gsap.timeline({ paused: true });
-const D = ${D.toFixed(3)}, W = ${w}, H = ${h}, PORTRAIT = ${format === 'short'}, LANG = '${lang}', RTL = ${rtl}, E = ${ENERGY[settings.motion.energy] || 1};
+const D = ${D.toFixed(3)}, W = ${w}, H = ${h}, PORTRAIT = ${format === 'short'}, LANG = '${lang}', RTL = ${rtl}, E = ${((ENERGY[settings.motion.energy] || 1) * (PERSONALITY[motion] || 1)).toFixed(3)};
 const T = ${JSON.stringify(theme)};
 const $ = (s) => document.querySelector('#stage ' + s), $$ = (s) => Array.from(document.querySelectorAll('#stage ' + s));
 try {

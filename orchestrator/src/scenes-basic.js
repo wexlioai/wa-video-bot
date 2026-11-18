@@ -45,7 +45,7 @@ const BASE_CSS = (portrait, lang) => `
   .wrap.center { align-items:center; text-align:center; }
   .wm { display:inline-block; overflow:hidden; vertical-align:bottom; padding-bottom:.08em; margin-bottom:-.08em; }
   .w { display:inline-block; }
-  .hd { font-weight:800; line-height:${lang === 'ur' ? 1.8 : 1.08}; letter-spacing:${lang === 'ur' ? 0 : -1}px; margin:0; }`;
+  .hd { font-family:var(--fh), var(--fb), sans-serif; font-weight:800; line-height:${lang === 'ur' ? 1.8 : 1.08}; letter-spacing:${lang === 'ur' ? 0 : -1}px; margin:0; }`;
 
 // ------------------------------------------------------------------ the 7 types
 const TYPES = {
@@ -133,7 +133,7 @@ AT.forEach((t, i) => {
       css: `.ringbox { position:relative; display:grid; place-items:center; width:${R * 2 + 40}px; height:${R * 2 + 40}px; margin:-${portrait ? 40 : 30}px 0; }
   .ring { position:absolute; inset:0; width:100%; height:100%; transform:rotate(-90deg); }
   .ring circle { fill:none; stroke:${theme.accent}; stroke-width:14; stroke-linecap:round; opacity:.9; }
-  .num { position:relative; font-weight:800; color:${readable(theme.bg, [theme.primary, theme.accent], 3)}; letter-spacing:-2px; }
+  .num { position:relative; font-family:var(--fh), var(--fb), sans-serif; font-weight:800; color:${readable(theme.bg, [theme.primary, theme.accent], 3)}; letter-spacing:-2px; }
   .lbl { font-weight:600; max-width:${portrait ? 900 : 1300}px; line-height:1.3; }`,
       js: `
 const C = 2 * Math.PI * ${R};
@@ -216,14 +216,18 @@ V.forEach((val, i) => {
 };
 
 /** Design { body, css, js, fonts } for one plan scene. */
-export function basicDesign(visual, { theme, format, lang, words }) {
+export function basicDesign(visual, { theme, format, lang, words, look }) {
   const portrait = format === 'short';
   const make = TYPES[visual?.type] || TYPES.statement;
   const v = TYPES[visual?.type] ? visual : { type: 'statement', text: visual?.text || visual?.heading || '' };
   const bd = backdrop(theme, portrait);
   const d = make(v, { theme, portrait, lang, words });
+  const fonts = look?.fonts?.heading?.query
+    ? [look.fonts.heading.query, look.fonts.body.query]
+    : ['Poppins:wght@400;600;700;800'];
   return {
-    fonts: 'Poppins:wght@400;600;700;800',
+    fonts,
+    families: look?.fonts?.heading ? { heading: look.fonts.heading.family, body: look.fonts.body.family } : { heading: 'Poppins', body: 'Poppins' },
     body: `${bd.html}\n${d.body}`,
     css: `${bd.css}\n${BASE_CSS(portrait, lang)}\n  ${d.css}`,
     js: `${bd.js}\n${d.js}`,

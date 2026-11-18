@@ -82,6 +82,8 @@ While it works, the bot shows *typing…* and keeps one status message up to dat
 | **Format poll** | Long 16:9 / YouTube Short 9:16 / Both (with the estimated length) |
 | **"What next?" poll** after the preview | Upload to YouTube / Change something (then type it, e.g. "make scene 3 shorter") / Change voice / Undo / Cancel |
 | `change voice` | pick a different voice (re-renders if a preview exists) |
+| `change look` | see 3 new designed looks for this video (re-renders if a preview exists) |
+| `forget style` | stop using your saved style; show 3 looks for every video |
 | `forget voice` | clear the saved voice |
 | `use lists` / `use polls` / `use numbers` | how choices are shown |
 | `retry` / `status` / `cancel` / `version` | as the names say |
