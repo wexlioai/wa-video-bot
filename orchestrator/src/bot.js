@@ -11,9 +11,11 @@ import { uploadVideo } from './youtube.js';
 import { serial, exists, readJson, writeJson, queueLength } from './util.js';
 import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
 import { startProgress } from './progress.js';
-import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk } from './motion.js';
+import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk, gsapPath } from './motion.js';
 import { initSettings, snapshotVersion } from './project.js';
-import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText } from './look.js';
+import { styleLibrary } from './look.js';
+import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText, loadLook } from './look.js';
+import { designScenes, storyboard, acceptEditedScenes } from './designer.js';
 import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
@@ -153,6 +155,13 @@ async function onChoice(job, option) {
         : '👍 I will show you 3 looks for every video.');
       return afterLook(job, choice.after);
     }
+    case 'storyboard':
+      if (v === 'go') { job.storyboardOk = true; return runStep(job, 'produce'); }
+      if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
+      job.choice = { ...choice, options: choice.options }; // keep waiting on the storyboard
+      job.state = 'AWAIT_CHOICE';
+      await saveJob(job);
+      return wa.sendText('✏️ Type what to change, for example:\n• "scene 3: show a map instead of the chart"\n• "make the title bigger"\n• "warmer colours"');
     case 'format':
       job.formats = v === 'both' ? ['long', 'short'] : [v];
       return runStep(job, 'produce');
@@ -259,6 +268,7 @@ const steps = {
     const prefs = await loadPrefs();
     const saved = prefs.look?.mode === 'always' && !job.forceLookChoice ? prefs.look : null;
     job.forceLookChoice = false;
+    job.storyboardOk = false;
     const p = await startProgress(saved
       ? `🎨 Designing the look in your saved style (${saved.styleName})…`
       : '🎨 Claude is designing 3 looks for your video… (about 2-3 minutes)');
@@ -368,6 +378,43 @@ const steps = {
       const { seconds } = await buildProps(job, plan, (i, n) => p.update(`🎙 Recording the voiceover with ${job.voice.name}: scene ${i}/${n}`), { speed: settings.voice.speed });
       job.seconds = seconds;
       let engine = await motionEngine();
+      let designs = {};
+      if (engine === 'hyperframes') {
+        const look = await loadLook(job.dir);
+        if (look) {
+          const props = await readJson(path.join(job.dir, 'props.json'));
+          await p.update('🎬 Claude is designing and animating each scene… (a few minutes)', true);
+          try {
+            const r = await designScenes(job, {
+              plan, props, look, formats: job.formats,
+              onProgress: (d, n) => n && p.update(`🎬 Claude is designing and animating the scenes… ${d}/${n}`),
+            });
+            designs = r.designs;
+            if (r.failed.length) {
+              console.log(`${ts()} [${job.id}] scenes using the basic style: ${r.failed.join(', ')}`);
+              await wa.sendText(`ℹ️ ${r.failed.length} scene${r.failed.length > 1 ? 's' : ''} did not pass the design checks and will use the simple style.`);
+            }
+          } catch (e) {
+            if (e instanceof ClaudeLimitError) throw e;
+            console.log(`${ts()} [${job.id}] scene design failed: ${e.message}`);
+            await wa.sendText('⚠️ Scene design failed, so this video uses the simple animated style.');
+          }
+          if (!job.storyboardOk) {
+            await p.update('🖼 Making the storyboard…', true);
+            const sb = await storyboard(job, { props, designs, look, settings, format: job.formats.includes('long') ? 'long' : 'short', gsapFile: gsapPath() });
+            if (sb.errors.length) console.log(`${ts()} [${job.id}] storyboard page errors: ${sb.errors.join(' | ')}`);
+            await p.done(`🖼 Storyboard ready (took ${p.elapsed()}).`);
+            job.state = 'AWAIT_CHOICE';
+            await saveJob(job);
+            await wa.sendImage(fileUrl(job, path.relative(job.dir, sb.image)), `🖼 Storyboard: one frame from each of the ${sb.scenes} scenes. Check it before the full render.`);
+            return ask(job, 'storyboard', 'Render the full video?', [
+              { label: '▶️ Looks good, render it', value: 'go' },
+              { label: '✏️ Change something', value: 'edit' },
+              { label: '🎨 Different look', value: 'look' },
+            ]);
+          }
+        }
+      }
       for (const [k, f] of job.formats.entries()) {
         const label = f === 'short' ? 'Short (9:16)' : 'long video (16:9)';
         const part = job.formats.length > 1 ? ` (${k + 1}/${job.formats.length})` : '';
@@ -379,7 +426,7 @@ const steps = {
         if (engine === 'hyperframes') {
           try {
             const props = await readJson(path.join(job.dir, 'props.json'));
-            job.outputs[f] = await renderProject(job, f, { props, settings, onPercent: onPct });
+            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct });
           } catch (e) {
             console.log(`${ts()} hyperframes render failed, falling back to remotion: ${e.message}`);
             await wa.sendText(`⚠️ The new motion engine failed on this video, so I'm using the classic one.\n${e.message.slice(0, 300)}`);
@@ -442,6 +489,46 @@ const steps = {
       throw new Error(`Edit produced an invalid plan (reverted): ${errs[0]}`);
     }
     await wa.sendText(`✏️ ${reply.split('\n').pop().slice(0, 300)}`);
+    job.changeNote = request.slice(0, 120);
+    return steps.produce(job);
+  },
+
+  // A change asked for at the storyboard: Claude edits the scene files, then a new storyboard.
+  async redesign(job, { request }) {
+    job.state = 'EDITING';
+    await saveJob(job);
+    const plan = await loadPlan(job);
+    const look = await loadLook(job.dir);
+    const style = (await styleLibrary()).find((x) => x.id === look?.style);
+    const backup = path.join(job.dir, 'scenes.prev');
+    await fs.rm(backup, { recursive: true, force: true });
+    await fs.cp(path.join(job.dir, 'scenes'), backup, { recursive: true });
+    await fs.copyFile(path.join(job.dir, 'look.json'), path.join(backup, 'look.json'));
+    const p = await startProgress('✏️ Claude is changing the scenes…');
+    let reply;
+    try {
+      await prepareRefs(job.dir);
+      reply = (await askClaude(job.dir, 'redesign', { REQUEST: request.replace(/"""/g, '"'), STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 40 })).trim();
+    } finally {
+      await p.done();
+    }
+    if (/^CANNOT:/i.test(reply)) {
+      await wa.sendText(`I can't do that at this stage: ${reply.replace(/^CANNOT:\s*/i, '')}\nYou can change the words after the preview with ✏️ Change something.`);
+      job.storyboardOk = false;
+      return steps.produce(job);
+    }
+    // palette changed in look.json? keep plan.theme in step
+    const newLook = await loadLook(job.dir);
+    if (newLook?.palette) {
+      const pl = await loadPlan(job);
+      const pp = newLook.palette;
+      pl.theme = { bg: pp.bg, bg2: pp.bg2, primary: pp.primary, accent: pp.accent, text: pp.ink };
+      await writeJson(path.join(job.dir, 'plan.json'), pl);
+    }
+    const bad = await acceptEditedScenes(job, { plan, look: newLook || look, formats: job.formats });
+    if (bad.length) console.log(`${ts()} [${job.id}] edited scenes with problems (they will be redesigned): ${bad.join(' | ').slice(0, 500)}`);
+    await wa.sendText(`✏️ ${reply.split('\n').pop().slice(0, 300)}`);
+    job.storyboardOk = false;
     job.changeNote = request.slice(0, 120);
     return steps.produce(job);
   },
@@ -733,6 +820,11 @@ async function handleMessage(data) {
   if (job.choice) {
     const opt = matchOption(job.choice, text);
     if (opt) return onChoice(job, opt);
+    if (job.choice.kind === 'storyboard' && text.trim().length > 2) {
+      job.choice = null;
+      await saveJob(job);
+      return runStep(job, 'redesign', { request: text });
+    }
     if (job.choice.kind !== 'approve') {
       return wa.sendText(`Please tap an option in the poll above, or reply with its number (1-${job.choice.options.length}).`);
     }

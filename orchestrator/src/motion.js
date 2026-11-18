@@ -13,6 +13,7 @@ import { run, exists, audioDuration } from './util.js';
 export const MOTION_DIR = path.join(ROOT, 'motion');
 const bin = () => path.join(MOTION_DIR, 'node_modules', '.bin', process.platform === 'win32' ? 'hyperframes.cmd' : 'hyperframes');
 const gsapFile = () => path.join(MOTION_DIR, 'node_modules', 'gsap', 'dist', 'gsap.min.js');
+export const gsapPath = gsapFile;
 
 /** Is the engine installed? Returns null when ready, otherwise a reason. */
 export async function engineMissing() {

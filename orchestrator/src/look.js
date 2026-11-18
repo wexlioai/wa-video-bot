@@ -61,7 +61,7 @@ export function bannedIssues(text, { html = false } = {}) {
     if (f) issues.push(`banned font "${f[0]}"`);
     if (GLOW.test(text)) issues.push('glow effect');
     if (/<script/i.test(text)) issues.push('frame contains JavaScript');
-    if (/<img\b|url\((?!['"]?data:)/i.test(String(text).replace(/https:\/\/fonts\.googleapis\.com[^"')]+/g, ''))) issues.push('frame loads images');
+    if (/<img\b|url\((?!['"]?(data:|#))/i.test(String(text).replace(/https:\/\/fonts\.googleapis\.com[^"')]+/g, ''))) issues.push('frame loads images');
   }
   return issues;
 }

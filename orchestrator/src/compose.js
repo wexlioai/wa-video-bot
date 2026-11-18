@@ -124,12 +124,13 @@ export function sceneHtml({ scene, format, lang, theme, settings, motion }) {
     font-family:'${fam.body}', ${rtl ? "'Noto Nastaliq Urdu', " : ''}Poppins, 'Segoe UI', Arial, sans-serif; }
   .clip { position:absolute; inset:0; }
   #stage { overflow:hidden; }
+  .sc { position:absolute; inset:0; overflow:hidden; }
   ${scene.design.css || ''}
   ${caps.css}
 </style>
 </head>
 <body>
-<div id="root" data-composition-id="scene" data-start="0" data-duration="${D.toFixed(3)}" data-width="${w}" data-height="${h}" data-fps="30">
+<div id="root" class="${format === 'short' ? 'portrait' : 'landscape'}" data-composition-id="scene" data-start="0" data-duration="${D.toFixed(3)}" data-width="${w}" data-height="${h}" data-fps="30">
 <section id="stage" class="clip" data-start="0" data-duration="${D.toFixed(3)}" data-track-index="0">
 ${scene.design.body}
 </section>
@@ -141,6 +142,15 @@ window.__timelines = window.__timelines || {};
 const tl = gsap.timeline({ paused: true });
 const D = ${D.toFixed(3)}, W = ${w}, H = ${h}, PORTRAIT = ${format === 'short'}, LANG = '${lang}', RTL = ${rtl}, E = ${((ENERGY[settings.motion.energy] || 1) * (PERSONALITY[motion] || 1)).toFixed(3)};
 const T = ${JSON.stringify(theme)};
+const WORDS = ${JSON.stringify((scene.words || []).map((w) => ({ text: w.text, start: +w.start.toFixed(3), end: +w.end.toFixed(3) })))};
+const _n = (x) => String(x).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+const at = (i) => (WORDS[Math.max(0, Math.min(WORDS.length - 1, i))] || { start: 0 }).start;
+const when = (word, after = 0) => {
+  const k = _n(word);
+  const w = WORDS.find((x) => x.start >= after && (_n(x.text) === k || (k.length > 3 && _n(x.text).startsWith(k))));
+  return w ? Math.max(0, w.start) : Math.min(Math.max(0, D - 0.6), after + 0.4);
+};
+const rand = (i) => { const x = Math.sin((i + 1) * 12.9898) * 43758.5453; return x - Math.floor(x); };
 const $ = (s) => document.querySelector('#stage ' + s), $$ = (s) => Array.from(document.querySelectorAll('#stage ' + s));
 try {
 ${scene.design.js || ''}

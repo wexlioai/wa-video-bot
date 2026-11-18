@@ -10,7 +10,7 @@ export class ClaudeLimitError extends Error {}
  * logged into with `claude` (no API key — make sure ANTHROPIC_API_KEY is NOT set).
  * Claude may only Read/Write/Edit files in the job folder.
  */
-export async function askClaude(jobDir, promptName, vars = {}) {
+export async function askClaude(jobDir, promptName, vars = {}, { maxTurns = 25 } = {}) {
   let prompt = await fs.readFile(path.join(cfg.promptsDir, `${promptName}.md`), 'utf8');
   vars = { SCHEMA: await fs.readFile(path.join(cfg.promptsDir, 'schema.md'), 'utf8'), ...vars };
   for (const [k, v] of Object.entries(vars)) prompt = prompt.replaceAll(`{{${k}}}`, String(v));
@@ -21,7 +21,7 @@ export async function askClaude(jobDir, promptName, vars = {}) {
     '--permission-mode', 'acceptEdits',
     '--allowedTools', 'Read', 'Write', 'Edit',
     '--disallowedTools', 'Bash', 'WebFetch', 'WebSearch',
-    '--max-turns', '25',
+    '--max-turns', String(maxTurns),
   ];
   if (cfg.claude.model) args.push('--model', cfg.claude.model);
 
