@@ -15,7 +15,7 @@ import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, mark
 import { initSettings, snapshotVersion } from './project.js';
 import { styleLibrary } from './look.js';
 import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText, loadLook } from './look.js';
-import { designScenes, storyboard, acceptEditedScenes } from './designer.js';
+import { designScenes, storyboard, acceptEditedScenes, reviewScenes } from './designer.js';
 import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
@@ -390,6 +390,16 @@ const steps = {
               onProgress: (d, n) => n && p.update(`🎬 Claude is designing and animating the scenes… ${d}/${n}`),
             });
             designs = r.designs;
+            if (r.designed > 0 && Object.keys(designs).length) {
+              const rv = await reviewScenes(job, {
+                plan, props, look, settings, formats: job.formats, gsapFile: gsapPath(), designs,
+                model: process.env.CRITIC_MODEL || 'sonnet',
+                onProgress: (t) => p.update(t, true),
+              });
+              designs = rv.designs;
+              job.suggestions = (rv.review.suggestions || []).slice(0, 3);
+              if (rv.fixed.length) await p.update(`🛠 Improved ${rv.fixed.length} scene${rv.fixed.length > 1 ? 's' : ''} after review.`, true);
+            }
             if (r.failed.length) {
               console.log(`${ts()} [${job.id}] scenes using the basic style: ${r.failed.join(', ')}`);
               await wa.sendText(`ℹ️ ${r.failed.length} scene${r.failed.length > 1 ? 's' : ''} did not pass the design checks and will use the simple style.`);
@@ -402,7 +412,7 @@ const steps = {
           if (!job.storyboardOk) {
             await p.update('🖼 Making the storyboard…', true);
             const sb = await storyboard(job, { props, designs, look, settings, format: job.formats.includes('long') ? 'long' : 'short', gsapFile: gsapPath() });
-            if (sb.errors.length) console.log(`${ts()} [${job.id}] storyboard page errors: ${sb.errors.join(' | ')}`);
+            if (sb.issues.length) console.log(`${ts()} [${job.id}] storyboard checks: ${sb.issues.join(' | ').slice(0, 800)}`);
             await p.done(`🖼 Storyboard ready (took ${p.elapsed()}).`);
             job.state = 'AWAIT_CHOICE';
             await saveJob(job);
@@ -437,6 +447,8 @@ const steps = {
         if (engine === 'remotion') job.outputs[f] = await renderVideo(job, f, onPct);
       }
       job.engine = engine;
+      job.qc = job.formats.flatMap((f) => (job.outputs[f]?.qc || []).map((w) => `${f === 'short' ? 'Short' : 'Long'}: ${w}`));
+      if (job.qc.length) console.log(`${ts()} [${job.id}] video checks: ${job.qc.join('; ')}`);
       job.version = await snapshotVersion(job, job.changeNote || 'first version');
       job.changeNote = null;
       await p.done(`✅ Video ready (took ${p.elapsed()}). Sending the preview…`);
@@ -462,6 +474,7 @@ const steps = {
     if (job.formats.includes('short') && seconds > 180) {
       await wa.sendText('⚠️ The Short is over 3 minutes, so YouTube will treat it as a normal vertical video.');
     }
+    if (job.qc?.length) await wa.sendText(`🔎 Quality check found something to look at:\n• ${job.qc.join('\n• ')}`);
     return askApproval(job);
   },
 

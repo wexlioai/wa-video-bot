@@ -10,7 +10,7 @@ export class ClaudeLimitError extends Error {}
  * logged into with `claude` (no API key — make sure ANTHROPIC_API_KEY is NOT set).
  * Claude may only Read/Write/Edit files in the job folder.
  */
-export async function askClaude(jobDir, promptName, vars = {}, { maxTurns = 25 } = {}) {
+export async function askClaude(jobDir, promptName, vars = {}, { maxTurns = 25, model } = {}) {
   let prompt = await fs.readFile(path.join(cfg.promptsDir, `${promptName}.md`), 'utf8');
   vars = { SCHEMA: await fs.readFile(path.join(cfg.promptsDir, 'schema.md'), 'utf8'), ...vars };
   for (const [k, v] of Object.entries(vars)) prompt = prompt.replaceAll(`{{${k}}}`, String(v));
@@ -23,7 +23,7 @@ export async function askClaude(jobDir, promptName, vars = {}, { maxTurns = 25 }
     '--disallowedTools', 'Bash', 'WebFetch', 'WebSearch',
     '--max-turns', String(maxTurns),
   ];
-  if (cfg.claude.model) args.push('--model', cfg.claude.model);
+  if (model || cfg.claude.model) args.push('--model', model || cfg.claude.model);
 
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY; // force subscription login, never API billing

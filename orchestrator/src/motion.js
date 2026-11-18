@@ -307,10 +307,13 @@ export async function renderProject(job, format, { props, settings, designs = {}
   const list = path.join(work, 'clips.txt');
   await fs.mkdir(work, { recursive: true });
   await fs.writeFile(list, clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
-  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-movflags', '+faststart', full], { timeoutMs: 30 * 60_000 });
+  // join, and bring the loudness to YouTube's -14 LUFS in the same pass
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'copy',
+    '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-movflags', '+faststart', full], { timeoutMs: 30 * 60_000 });
   onPercent?.(99);
+  const qc = await checkVideo(full);
 
-  const out = await makePreview(full, format, job.dir);
+  const out = { ...(await makePreview(full, format, job.dir)), qc };
   if (format === 'long' || !(await exists(path.join(job.dir, 'thumb.png')))) {
     await run('ffmpeg', ['-y', '-ss', '1.2', '-i', clips[0], '-frames:v', '1', path.join(job.dir, 'thumb.png')], { allowFail: true });
   }
@@ -331,4 +334,15 @@ export async function makePreview(full, format, dir) {
   const scale = format === 'short' ? 'scale=720:-2' : 'scale=-2:720';
   await run('ffmpeg', ['-y', '-i', full, '-vf', scale, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', preview], { timeoutMs: 30 * 60_000 });
   return { full, preview, hd: false };
+}
+
+/** After the render: black or frozen stretches (signs of a broken scene). Returns warnings. */
+export async function checkVideo(file) {
+  const r = await run('ffmpeg', ['-hide_banner', '-i', file, '-vf', 'blackdetect=d=0.6:pix_th=0.06,freezedetect=n=-60dB:d=3', '-an', '-f', 'null', '-'], { allowFail: true, timeoutMs: 20 * 60_000 }).catch(() => ({ stderr: '' }));
+  const out = [];
+  for (const m of r.stderr.matchAll(/black_start:([\d.]+)\s+black_end:([\d.]+)/g)) out.push(`black screen ${(+m[1]).toFixed(1)}-${(+m[2]).toFixed(1)} s`);
+  const starts = [...r.stderr.matchAll(/freeze_start: ([\d.]+)/g)].map((m) => +m[1]);
+  const ends = [...r.stderr.matchAll(/freeze_end: ([\d.]+)/g)].map((m) => +m[1]);
+  starts.forEach((s, i) => out.push(`no movement ${s.toFixed(1)}-${ends[i] != null ? ends[i].toFixed(1) : 'end'} s`));
+  return out.slice(0, 6);
 }

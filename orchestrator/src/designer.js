@@ -63,7 +63,7 @@ export function parseScene(text, look) {
  * Make sure every scene has a design. props = buildProps output (words per scene).
  * Returns { designs: {id: design}, failed: [id], designed: n }.
  */
-export async function designScenes(job, { plan, props, look, formats, onProgress, extra = '' }) {
+export async function designScenes(job, { plan, props, look, formats, onProgress, extra = '', force = {} }) {
   await prepareRefs(job.dir);
   const scDir = path.join(job.dir, 'scenes');
   await fs.mkdir(scDir, { recursive: true });
@@ -75,7 +75,7 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
 
   const todo = [];
   for (const s of plan.scenes) {
-    if (index[s.id] !== keyOf(s) || !(await exists(path.join(scDir, `${s.id}.html`)))) todo.push(s);
+    if (force[s.id] || index[s.id] !== keyOf(s) || !(await exists(path.join(scDir, `${s.id}.html`)))) todo.push(s);
   }
   const fps = props.fps || 30;
   const formatNote = formats.length > 1
@@ -91,7 +91,11 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
         return { id: s.id, D: +(p.durationInFrames / fps).toFixed(2), narration: s.narration, hint: hint(s.visual), words: (p.words || []).map((w, i) => [i, w.text, +w.start.toFixed(2)]) };
       }),
     });
-    for (const s of scenes) await fs.rm(path.join(scDir, `${s.id}.html`), { force: true });
+    // keep the previous design: it comes back if the new one fails its checks
+    for (const s of scenes) {
+      const f = path.join(scDir, `${s.id}.html`);
+      if (await exists(f)) await fs.rename(f, `${f}.bak`);
+    }
     try {
       await askClaude(job.dir, 'design', {
         STYLE_FILE: style?.file || 'flat-explainer.md',
@@ -109,8 +113,13 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
       const f = path.join(scDir, `${s.id}.html`);
       const text = await fs.readFile(f, 'utf8').catch(() => null);
       const r = text ? parseScene(text, look) : { problems: ['scene file was not written'] };
-      if (r.problems) failed.set(s.id, r.problems);
-      else { failed.delete(s.id); index[s.id] = keyOf(s); }
+      if (r.problems) {
+        const bak = `${f}.bak`;
+        const old = (await exists(bak)) ? parseScene(await fs.readFile(bak, 'utf8'), look) : null;
+        if (old?.design && index[s.id] === keyOf(s)) { await fs.rename(bak, f); failed.delete(s.id); } // keep the earlier good one
+        else failed.set(s.id, r.problems);
+      } else { failed.delete(s.id); index[s.id] = keyOf(s); }
+      await fs.rm(`${f}.bak`, { force: true });
     }
     await writeJson(indexFile, index);
   };
@@ -118,7 +127,8 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
   for (let i = 0; i < todo.length; i += BATCH) {
     const batch = todo.slice(i, i + BATCH);
     await onProgress?.(done, todo.length);
-    await runBatch(batch);
+    const notes = batch.filter((s) => force[s.id]).map((s) => `- ${s.id}: ${force[s.id]}`);
+    await runBatch(batch, notes.length ? `A reviewer asked for these changes; redesign these scenes with them in mind:\n${notes.join('\n')}` : '');
     done += batch.length;
   }
   // one repair round for scenes with problems
@@ -158,27 +168,98 @@ export async function acceptEditedScenes(job, { plan, look, formats }) {
   return bad;
 }
 
-// ------------------------------------------------------------------ storyboard
+// ------------------------------------------------------------------ capture, checks, storyboard
+// Frames are rendered with Playwright by seeking each scene's GSAP timeline (no video render needed).
+
+/** Runs inside the page: automatic layout checks for the frame currently shown. */
+function inspectFrame({ W, H, portrait, capPos, bg, D }) {
+  const issues = [];
+  const stage = document.querySelector('#stage');
+  if (!stage) return ['no stage'];
+  const tl = window.__timelines?.scene;
+  if (tl && tl.duration() > D + 0.15) issues.push(`animation runs ${(tl.duration() - D).toFixed(1)} s past the end of the scene`);
+  const hex = (c) => {
+    const m = c.match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const [r, g, b, a = 1] = m[1].split(',').map((x) => parseFloat(x));
+    return { r, g, b, a };
+  };
+  const lum = ({ r, g, b }) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+    .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const bgOf = (el) => {
+    for (let e = el; e && e !== document.body; e = e.parentElement) {
+      const c = hex(getComputedStyle(e).backgroundColor);
+      if (c && c.a > 0.6) return c;
+    }
+    return bg;
+  };
+  const shown = (el) => {
+    let o = 1;
+    for (let e = el; e && e !== document.body; e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+      o *= parseFloat(cs.opacity);
+    }
+    return o > 0.6;
+  };
+  const texts = [...stage.querySelectorAll('*')].filter((el) => !(el.closest('svg') && el.tagName !== 'text')
+    && [...el.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim()) && shown(el));
+  const boxes = [];
+  const capTop = portrait ? H - 560 : H - 200;
+  for (const el of texts) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    const label = `"${el.textContent.trim().slice(0, 28)}"`;
+    if (r.left < -2 || r.top < -2 || r.right > W + 2 || r.bottom > H + 2) issues.push(`text cut off at the edge: ${label}`);
+    const cs = getComputedStyle(el);
+    const fs = parseFloat(cs.fontSize);
+    if (fs < (portrait ? 30 : 24)) issues.push(`text too small (${Math.round(fs)} px): ${label}`);
+    if (capPos === 'bottom' && r.bottom > capTop + 10 && r.top < H) issues.push(`text in the subtitle area: ${label}`);
+    if (el.tagName !== 'text') {
+      const fg = hex(cs.color);
+      if (fg && ratio(fg, bgOf(el)) < 3) issues.push(`low contrast text: ${label}`);
+    }
+    boxes.push({ el, r, label });
+  }
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i]; const b = boxes[j];
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+      const ix = Math.max(0, Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left));
+      const iy = Math.max(0, Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top));
+      const small = Math.min(a.r.width * a.r.height, b.r.width * b.r.height);
+      if (small && (ix * iy) / small > 0.2) issues.push(`texts overlap: ${a.label} and ${b.label}`);
+    }
+  }
+  return [...new Set(issues)].slice(0, 6);
+}
+
 /**
- * One still per scene (at ~70 % of the scene, when it has built up), on a labelled contact sheet.
- * Rendered with Playwright by seeking the GSAP timeline, so it needs no video render.
+ * Render frames of every scene at given fractions of its length, with automatic checks.
+ * Returns [{ id, n, frames: [{t, img}], issues: [...], designed }].
  */
-export async function storyboard(job, { props, designs, look, settings, format, gsapFile }) {
+export async function captureScenes(job, { props, designs, look, settings, format, gsapFile, fractions = [0.72], dirName = 'storyboard', onlyIds = null }) {
   const { chromium } = await import('playwright');
-  const dir = path.join(job.dir, 'storyboard');
+  const dir = path.join(job.dir, dirName);
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(dir, { recursive: true });
   await fs.copyFile(gsapFile, path.join(dir, 'gsap.min.js'));
   const portrait = format === 'short';
-  const [w, h] = portrait ? [1080, 1920] : [1920, 1080];
+  const [W, H] = portrait ? [1080, 1920] : [1920, 1080];
   const fps = props.fps || 30;
+  const bgRgb = (() => { const n = parseInt((props.theme.bg || '#ffffff').slice(1), 16); return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, a: 1 }; })();
   const browser = await chromium.launch();
-  const shots = [];
+  const out = [];
   try {
-    const page = await browser.newPage({ viewport: { width: w, height: h } });
-    const errors = [];
-    page.on('pageerror', (e) => errors.push(e.message));
+    const page = await browser.newPage({ viewport: { width: W, height: H } });
     for (const [i, s] of props.scenes.entries()) {
+      if (onlyIds && !onlyIds.includes(s.id)) continue;
+      const errors = [];
+      const onErr = (e) => errors.push(e.message);
+      const onConsole = (m) => { if (m.type() === 'error' && /scene animation error/.test(m.text())) errors.push(m.text()); };
+      page.on('pageerror', onErr);
+      page.on('console', onConsole);
       const duration = s.durationInFrames / fps;
       const design = designs[s.id] || basicDesign(s.visual, { theme: props.theme, format, lang: props.language, words: s.words, look });
       const html = sceneHtml({ scene: { id: s.id, duration, words: s.words, audio: null, design }, format, lang: props.language, theme: props.theme, settings, motion: look?.motion });
@@ -186,41 +267,130 @@ export async function storyboard(job, { props, designs, look, settings, format, 
       await fs.writeFile(file, html);
       await page.goto(pathToFileURL(file).href, { waitUntil: 'networkidle', timeout: 30_000 }).catch(() => {});
       await page.evaluate(() => document.fonts.ready).catch(() => {});
-      const t = Math.max(0.5, duration * 0.72);
-      await page.evaluate((t) => {
-        for (const el of document.querySelectorAll('[data-start]')) {
-          if (el.id === 'root' || el.tagName === 'AUDIO') continue;
-          const st = +el.dataset.start;
-          const d = +el.dataset.duration;
-          el.style.visibility = t >= st && t < st + d ? 'visible' : 'hidden';
+      const frames = [];
+      const issues = [];
+      for (const f of fractions) {
+        const t = Math.max(0.3, Math.min(duration - 0.05, duration * f));
+        await page.evaluate((t) => {
+          for (const el of document.querySelectorAll('[data-start]')) {
+            if (el.id === 'root' || el.tagName === 'AUDIO') continue;
+            const st = +el.dataset.start;
+            const d = +el.dataset.duration;
+            el.style.visibility = t >= st && t < st + d ? 'visible' : 'hidden';
+          }
+          window.__timelines?.scene?.seek(t, false);
+        }, t).catch((e) => errors.push(e.message));
+        await page.waitForTimeout(100);
+        const img = path.join(dir, `${s.id}-${Math.round(f * 100)}.jpg`);
+        await page.screenshot({ path: img, type: 'jpeg', quality: 80 });
+        frames.push({ t, img });
+        if (f >= 0.6) {
+          issues.push(...await page.evaluate(inspectFrame, { W, H, portrait, capPos: settings.captions.position, bg: bgRgb, D: duration }).catch(() => []));
         }
-        window.__timelines?.scene?.seek(t, false);
-      }, t).catch((e) => errors.push(e.message));
-      await page.waitForTimeout(120);
-      const img = path.join(dir, `${s.id}.jpg`);
-      await page.screenshot({ path: img, type: 'jpeg', quality: 82 });
-      shots.push({ n: i + 1, img, designed: !!designs[s.id], text: (s.words || []).map((x) => x.text).join(' ') });
+      }
+      page.off('pageerror', onErr);
+      page.off('console', onConsole);
+      if (errors.length) issues.unshift(`script error: ${errors[0].slice(0, 160)}`);
+      out.push({ id: s.id, n: i + 1, frames, issues: [...new Set(issues)], designed: !!designs[s.id], text: (s.words || []).map((x) => x.text).join(' ') });
     }
-    // contact sheet
-    const cols = portrait ? Math.min(5, shots.length) : Math.min(3, shots.length);
-    const cw = portrait ? 300 : 560;
-    const ch = Math.round(cw * (h / w));
-    const sheet = `<!doctype html><html><head><meta charset="utf-8"><style>
-      body{margin:0;background:#f3f1ec;font:500 15px/1.35 Arial,sans-serif;color:#222}
-      .g{display:grid;grid-template-columns:repeat(${cols},${cw}px);gap:18px;padding:22px}
-      .c img{width:${cw}px;height:${ch}px;display:block;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.12)}
-      .c b{display:inline-block;background:#222;color:#fff;border-radius:6px;padding:1px 8px;margin:8px 6px 0 0}
-      .c span{color:#555}</style></head><body><div class="g">${
-      shots.map((x) => `<div class="c"><img src="${pathToFileURL(x.img).href}"><div><b>${x.n}</b><span>${esc(x.text.slice(0, portrait ? 60 : 110))}${x.text.length > (portrait ? 60 : 110) ? '…' : ''}</span></div></div>`).join('')
-    }</div></body></html>`;
-    const sheetHtml = path.join(dir, 'sheet.html');
-    await fs.writeFile(sheetHtml, sheet);
-    await page.setViewportSize({ width: cols * (cw + 18) + 26, height: 400 });
-    await page.goto(pathToFileURL(sheetHtml).href, { waitUntil: 'load' });
-    const out = path.join(dir, 'storyboard.jpg');
-    await page.screenshot({ path: out, type: 'jpeg', quality: 85, fullPage: true });
-    return { image: out, scenes: shots.length, errors: errors.slice(0, 5) };
   } finally {
     await browser.close();
   }
+  return out;
+}
+
+/** A labelled contact sheet of frames (one row item per frame). */
+export async function contactSheet(items, outFile, { portrait = false, cols, width } = {}) {
+  const { chromium } = await import('playwright');
+  cols ||= portrait ? Math.min(5, items.length) : Math.min(3, items.length);
+  const cw = width || (portrait ? 300 : 560);
+  const ch = Math.round(cw * (portrait ? 16 / 9 : 9 / 16));
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+    body{margin:0;background:#f3f1ec;font:500 15px/1.35 Arial,sans-serif;color:#222}
+    .g{display:grid;grid-template-columns:repeat(${cols},${cw}px);gap:18px;padding:22px}
+    .c img{width:${cw}px;height:${ch}px;display:block;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.12)}
+    .c b{display:inline-block;background:#222;color:#fff;border-radius:6px;padding:1px 8px;margin:8px 6px 0 0}
+    .c span{color:#555}</style></head><body><div class="g">${
+    items.map((x) => `<div class="c"><img src="${pathToFileURL(x.img).href}"><div><b>${esc(x.label)}</b><span>${esc(x.caption || '')}</span></div></div>`).join('')
+  }</div></body></html>`;
+  const sheetHtml = outFile.replace(/\.jpg$/, '.html');
+  await fs.writeFile(sheetHtml, html);
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: cols * (cw + 18) + 26, height: 400 } });
+    await page.goto(pathToFileURL(sheetHtml).href, { waitUntil: 'load' });
+    await page.screenshot({ path: outFile, type: 'jpeg', quality: 85, fullPage: true });
+  } finally {
+    await browser.close();
+  }
+  return outFile;
+}
+
+/** The storyboard you see on WhatsApp: one frame per scene. */
+export async function storyboard(job, opts) {
+  const shots = await captureScenes(job, { ...opts, fractions: [0.72], dirName: 'storyboard' });
+  const portrait = opts.format === 'short';
+  const n = portrait ? 60 : 110;
+  const image = await contactSheet(shots.map((x) => ({
+    img: x.frames[0].img, label: String(x.n), caption: `${x.text.slice(0, n)}${x.text.length > n ? '…' : ''}`,
+  })), path.join(job.dir, 'storyboard', 'storyboard.jpg'), { portrait });
+  return { image, scenes: shots.length, issues: shots.filter((x) => x.issues.length).map((x) => `${x.n}: ${x.issues.join('; ')}`) };
+}
+
+// ------------------------------------------------------------------ the critic loop
+const SEVERE = /(cut off|overlap|subtitle area|script error|low contrast|too small|past the end)/i;
+
+/**
+ * Score designed scenes (automatic checks + Claude looking at frames) and redesign the weak ones.
+ * Returns { designs, review, rounds, fixed: [ids], weak: [ids still under 4] }.
+ */
+export async function reviewScenes(job, { plan, props, look, settings, formats, gsapFile, designs, onProgress, model, maxRounds = 2 }) {
+  const style = (await styleLibrary()).find((s) => s.id === look.style);
+  const format = formats.includes('long') ? 'long' : 'short';
+  const fixed = new Set();
+  let review = { scenes: [], suggestions: [] };
+  let weak = [];
+  for (let round = 1; round <= maxRounds + 1; round++) {
+    await onProgress?.(`🔎 Checking every scene${round > 1 ? ` again (round ${round})` : ''}…`);
+    const shots = await captureScenes(job, { props, designs, look, settings, format, gsapFile, fractions: [0.35, 0.78], dirName: 'critic' });
+    const portrait = format === 'short';
+    const sheets = [];
+    for (let i = 0; i < shots.length; i += 6) {
+      const part = shots.slice(i, i + 6);
+      const items = part.flatMap((x) => x.frames.map((f, k) => ({ img: f.img, label: `${x.n}${'ab'[k]}`, caption: x.designed ? '' : '(simple style)' })));
+      sheets.push(await contactSheet(items, path.join(job.dir, 'critic', `sheet-${sheets.length + 1}.jpg`), { portrait, cols: portrait ? 4 : 4, width: portrait ? 260 : 440 }));
+    }
+    await writeJson(path.join(job.dir, 'critic', 'input.json'), {
+      scenes: shots.map((x) => ({ n: x.n, id: x.id, narration: plan.scenes.find((s) => s.id === x.id)?.narration, designed: x.designed, auto_issues: x.issues })),
+      sheets: sheets.map((f) => path.relative(job.dir, f).split(path.sep).join('/')),
+    });
+    try {
+      await askClaude(job.dir, 'critic', { STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 15, model });
+      review = await readJson(path.join(job.dir, 'critic', 'review.json'));
+    } catch (e) {
+      if (e instanceof ClaudeLimitError) throw e;
+      console.log(`${ts()} [${job.id}] critic failed: ${e.message.slice(0, 200)}`);
+      review = { scenes: [], suggestions: [] };
+    }
+    const byId = new Map((review.scenes || []).map((r) => [r.id, r]));
+    const need = {};
+    for (const x of shots) {
+      if (!x.designed) continue;
+      const r = byId.get(x.id);
+      const severe = x.issues.filter((i) => SEVERE.test(i));
+      if ((r && Number(r.score) < 4) || severe.length) {
+        need[x.id] = [r?.fix, ...(r?.problems || []), ...severe].filter(Boolean).join('; ').slice(0, 600);
+      }
+    }
+    weak = Object.keys(need);
+    console.log(`${ts()} [${job.id}] review round ${round}: scores ${(review.scenes || []).map((r) => `${r.id}=${r.score}`).join(' ')}; redo: ${weak.join(', ') || 'none'}`);
+    if (!weak.length || round > maxRounds) break;
+    await onProgress?.(`🛠 Improving ${weak.length} scene${weak.length > 1 ? 's' : ''} the review flagged…`);
+    const r = await designScenes(job, { plan, props, look, formats, force: need });
+    for (const id of weak) {
+      if (r.designs[id]) { designs[id] = r.designs[id]; fixed.add(id); }
+    }
+  }
+  await writeJson(path.join(job.dir, 'critic', 'review.json'), review).catch(() => {});
+  return { designs, review, fixed: [...fixed], weak };
 }
