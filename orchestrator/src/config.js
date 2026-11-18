@@ -63,6 +63,7 @@ export const cfg = {
   openspeaker: {
     apiKey: (process.env.TTS_PROVIDER === 'openspeaker' ? req('OPENSPEAKER_API_KEY') : process.env.OPENSPEAKER_API_KEY || ''),
     speed: Number(process.env.OPENSPEAKER_SPEED || 1), // 0.5 - 1.5
+    voiceProvider: process.env.OPENSPEAKER_VOICE_PROVIDER || 'elevenlabs', // elevenlabs | edge
   },
 
   eleven: {

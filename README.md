@@ -70,15 +70,18 @@ Send `version` to the bot to see which version it's on.
 
 ## Using it
 
-| You send | Bot does |
+Every choice is a **WhatsApp poll**: tap an option (or reply with its number).
+
+| You send / tap | Bot does |
 |---|---|
-| a PDF / DOCX / TXT, or a long pasted text | reads it and sends 3–4 voice samples (~20 s each) |
-| `2 L` / `2 S` / `2 B` | voice 2 as a long 16:9 video / a Short 9:16 / both. Just `2` picks automatically by length |
-| `ok` | uploads to YouTube (headless browser) and sends the link |
-| any other text, e.g. *"scene 3 ka heading chota karo"*, *"colors green kar do"*, *"title: …"* | Claude edits only that part, re-renders and sends a new preview |
-| `voice 3` | re-voices with voice 3 |
-| `undo` | reverts the last change |
-| `retry` / `status` / `cancel` | as the names say |
+| a PDF / DOCX / TXT, or a long pasted text | reads it (Claude plans the scenes) |
+| **Voice poll** | sends 6 voices as ~5-second samples, best English narrators first; *More voices* shows the next 6. Samples are made once and stored, so they're instant afterwards |
+| **"Use this voice next time?"** | *Yes, always*: future videos skip the voice step. *Ask me every time*: you pick each time |
+| **Format poll** | Long 16:9 / YouTube Short 9:16 / Both (with the estimated length) |
+| **"What next?" poll** after the preview | Upload to YouTube / Change something (then type it, e.g. "make scene 3 shorter") / Change voice / Undo / Cancel |
+| `change voice` | pick a different voice (re-renders if a preview exists) |
+| `forget voice` | clear the saved voice |
+| `retry` / `status` / `cancel` / `version` | as the names say |
 
 If your Claude usage limit runs out mid-job, the bot tells you and retries every 30 minutes until the limit resets. Voice audio is cached per scene, so an edit only re-voices the scenes whose spoken words changed.
 

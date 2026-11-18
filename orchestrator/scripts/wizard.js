@@ -61,7 +61,7 @@ function readEnv() {
 }
 function writeEnv(e) {
   const order = ['PORT', 'WEBHOOK_SECRET', 'SELF_URL', 'EVO_URL', 'EVO_API_KEY', 'EVO_INSTANCE', 'OWNER_NUMBER', 'SELF_CHAT',
-    'TTS_PROVIDER', 'TTS_RATE', 'PYTHON_BIN', 'OPENSPEAKER_API_KEY', 'OPENSPEAKER_SPEED', 'ELEVEN_API_KEY', 'ELEVEN_MODEL', 'VOICES_EN', 'VOICES_UR', 'SAMPLE_CHARS', 'CLAUDE_BIN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_MODEL', 'CLAUDE_TIMEOUT_MIN',
+    'TTS_PROVIDER', 'TTS_RATE', 'PYTHON_BIN', 'OPENSPEAKER_API_KEY', 'OPENSPEAKER_VOICE_PROVIDER', 'OPENSPEAKER_SPEED', 'ELEVEN_API_KEY', 'ELEVEN_MODEL', 'VOICES_EN', 'VOICES_UR', 'SAMPLE_CHARS', 'CLAUDE_BIN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_MODEL', 'CLAUDE_TIMEOUT_MIN',
     'RENDER_CONCURRENCY', 'CAPTIONS', 'UPDATE_REPO', 'UPDATE_BRANCH', 'UPDATE_CHECK_MIN', 'YT_METHOD', 'YT_PRIVACY', 'YT_CATEGORY', 'YT_CLIENT_ID', 'YT_CLIENT_SECRET', 'YT_REFRESH_TOKEN'];
   const keys = [...order.filter((k) => k in e), ...Object.keys(e).filter((k) => !order.includes(k))];
   fs.writeFileSync(ENV_FILE, '# written by scripts/wizard.js — re-run it to change values\n' + keys.map((k) => `${k}=${e[k]}`).join('\n') + '\n');
@@ -95,6 +95,8 @@ async function main() {
   e.EVO_INSTANCE ||= 'videobot';
   e.ELEVEN_MODEL ||= 'eleven_v3';
   e.TTS_RATE ||= '+0%';
+  delete e.VOICES_EN;
+  delete e.VOICES_UR;
   e.SAMPLE_CHARS ||= '260';
   e.CLAUDE_TIMEOUT_MIN ||= '15';
   e.RENDER_CONCURRENCY ||= String(Math.max(1, Math.min(4, os.cpus().length - 1)));
@@ -202,27 +204,6 @@ async function elevenVoices(key) {
   }));
 }
 
-async function pickVoices(lang, voices, current, reload, defaults = []) {
-  // current .env value only counts if it belongs to the provider being configured
-  const known = new Set(voices.map((v) => v.id));
-  if (current && !current.split(',').every((x) => known.has(x.split(':')[0]))) current = '';
-  const defNums = defaults.map((id) => voices.findIndex((v) => v.id === id) + 1).filter((n) => n > 0).join(',');
-  for (;;) {
-    console.log(`\n   ${c.b(`Voices for ${lang} scripts`)}`);
-    voices.forEach((v, i) => console.log(`     ${String(i + 1).padStart(3)}) ${v.name.padEnd(30)} ${c.d(v.info)}`));
-    const curNames = (current || '').split(',').filter((x) => x.includes(':')).map((x) => x.split(':')[1]).join(', ');
-    if (curNames) console.log(c.d(`     current: ${curNames}  (press Enter to keep)`));
-    const a = await ask(`Pick 3-4 numbers for ${lang}, e.g. 1,4,7${reload ? '  (r = reload list)' : ''}`, current ? 'keep' : defNums);
-    if (a === 'keep') return current;
-    if (reload && a.toLowerCase() === 'r') { voices.splice(0, voices.length, ...(await reload())); continue; }
-    const nums = [...new Set(a.split(/[\s,]+/).map(Number).filter((n) => n >= 1 && n <= voices.length))];
-    if (nums.length < 1 || nums.length > 4) { bad('Pick between 1 and 4 voices'); continue; }
-    if (nums.length < 3) warn('Tip: 3-4 voices give you a better choice. Continuing anyway.');
-    ok(`${lang}: ${nums.map((n) => voices[n - 1].name).join(', ')}`);
-    return nums.map((n) => `${voices[n - 1].id}:${voices[n - 1].name}`).join(',');
-  }
-}
-
 async function voiceStep(e) {
   header('Voice');
   help([
@@ -264,60 +245,13 @@ async function openSpeakerStep(e) {
   ok(`Key works. Credits available: ${credits}`);
 
   help([
-    'Which voice provider inside OpenSpeaker?',
-    `  ${c.b('ElevenLabs')} has the most natural voices and supports Urdu (v3). ${c.b('Edge')} also has Urdu (Asad, Uzma).`,
-    '  Checked live: ElevenLabs has 6 Urdu voices (Amjid, Saira, Naqsh, Kamran, Reva…), Edge has 4, MiniMax has none.',
-    '  Cost: about 1 credit per character + 10 credits per scene for caption timings.',
+    'Which voices should OpenSpeaker use? (Checked live on your account.)',
+    `  ${c.b('ElevenLabs')}: the most natural, human-sounding voices (recommended). About 1 credit per character.`,
+    `  ${c.b('Edge')}: good Microsoft voices at about half the credits.`,
+    'You pick the actual voice on WhatsApp: the bot sends 5-second samples and remembers your favourite.',
   ]);
-  const provs = ['elevenlabs', 'minimax', 'edge', 'fishaudio', 'kokoro', 'vbee'];
-  const curProv = (e.VOICES_UR || '').split('_')[0];
-  const pi = await choose('Voice provider', provs.map((x) => ({ elevenlabs: 'ElevenLabs (recommended)', minimax: 'MiniMax', edge: 'Edge (Microsoft)', fishaudio: 'Fish Audio', kokoro: 'Kokoro', vbee: 'Vbee' }[x])),
-    Math.max(1, provs.indexOf(curProv) + 1));
-  const prov = provs[pi - 1];
-
-  // Tested against the live API: the language filter takes ISO codes (ur / en), "search=urdu"
-  // finds more ElevenLabs Urdu voices, and some providers ignore filters, so we also filter here.
-  const fetchVoices = async (lang) => {
-    const code = lang === 'Urdu' ? 'ur' : 'en';
-    const qs = [`language=${code}`];
-    if (code === 'ur') qs.push('search=urdu');
-    if (code === 'en' && prov === 'elevenlabs') qs.unshift(`language=en&category=premade`); // curated list first
-    const seen = new Map();
-    for (const q of qs) {
-      const j = await osGet(e.OPENSPEAKER_API_KEY, `/v3/voices?provider=${prov}&page_size=100&${q}`).catch(() => ({ data: [] }));
-      for (const v of j.data || []) {
-        const langs = [v.language, v.locale, ...(v.languages || []).map((l) => l.language || l.locale)].filter(Boolean).map((x) => String(x).toLowerCase());
-        if (langs.some((x) => x === code || x.startsWith(`${code}-`)) && !seen.has(v.voice_id)) seen.set(v.voice_id, v);
-      }
-      if (code === 'en' && seen.size >= 20) break;
-    }
-    return [...seen.values()].slice(0, 60).map((v) => ({
-      id: v.voice_id,
-      name: String(v.name || v.voice_id).replace(/[,:]/g, ' ').replace(/\s+/g, ' ').slice(0, 36).trim(),
-      info: [v.gender, v.locale || v.language, v.category].filter(Boolean).join(', '),
-    }));
-  };
-  const DEFAULTS = {
-    elevenlabs: {
-      Urdu: ['vH5LP38dcYJ3CIbC2rKX', 'hA0RyxVmITMttngSpcOF', 'L1f58R08RFtEqY28c3BT', 'UT6USLtoAlXHj5k4sOLY'], // Amjid, Saira, Naqsh, Reva
-      English: ['JBFqnCBsd6RMkjVDRZzb', 'EXAVITQu4vr4xnSDxMaL', 'CwhRBWXzGAHq8TQ4Fs17', 'hpp4J3VqNfWAUOO0d1Us'], // George, Sarah, Roger, Bella
-    },
-    edge: {
-      Urdu: ['ur-PK-AsadNeural', 'ur-PK-UzmaNeural', 'ur-IN-SalmanNeural', 'ur-IN-GulNeural'],
-      English: ['en-US-AndrewMultilingualNeural', 'en-US-AvaMultilingualNeural', 'en-US-BrianMultilingualNeural', 'en-GB-RyanNeural'],
-    },
-  };
-  for (const [lang, key] of [['Urdu', 'VOICES_UR'], ['English', 'VOICES_EN']]) {
-    process.stdout.write(c.d(`   loading ${prov} voices for ${lang}… `));
-    const list = await fetchVoices(lang);
-    console.log(`${list.length} found`);
-    if (!list.length) {
-      warn(`${prov} has no ${lang} voices${lang === 'Urdu' ? ' (MiniMax, for example, has none). Choose ElevenLabs or Edge for Urdu' : ''}.`);
-      continue;
-    }
-    const defs = (DEFAULTS[prov]?.[lang] || []).map((id) => `${prov}_${id}`);
-    e[key] = await pickVoices(lang, list, e[key], () => fetchVoices(lang), defs);
-  }
+  const vp = await choose('Voices from', ['ElevenLabs (recommended)', 'Edge (Microsoft)'], e.OPENSPEAKER_VOICE_PROVIDER === 'edge' ? 2 : 1);
+  e.OPENSPEAKER_VOICE_PROVIDER = vp === 2 ? 'edge' : 'elevenlabs';
   const sp = await choose('Speaking speed', ['Normal (1.0)', 'A little slower (0.92)', 'A little faster (1.08)'],
     e.OPENSPEAKER_SPEED === '0.92' ? 2 : e.OPENSPEAKER_SPEED === '1.08' ? 3 : 1);
   e.OPENSPEAKER_SPEED = ['1', '0.92', '1.08'][sp - 1];
@@ -354,18 +288,15 @@ async function edgeVoices(e) {
   const ur = all.filter((v) => v.locale.startsWith('ur-')).map(nice);
   const en = all.filter((v) => /^en-(US|GB|IN|AU)$/.test(v.locale)).map(nice);
   ok(`${all.length} free voices available (${ur.length} Urdu)`);
-  help(['You will hear each chosen voice as a WhatsApp sample before every video, and pick one there.']);
-  e.VOICES_UR = await pickVoices('Urdu', ur, e.VOICES_UR, null, ['ur-PK-AsadNeural', 'ur-PK-UzmaNeural', 'ur-IN-SalmanNeural', 'ur-IN-GulNeural']);
-  e.VOICES_EN = await pickVoices('English', en, e.VOICES_EN, null,
-    ['en-US-AndrewMultilingualNeural', 'en-US-AvaMultilingualNeural', 'en-US-BrianMultilingualNeural', 'en-GB-RyanNeural']);
+  help(['You pick the voice on WhatsApp: the bot sends short samples you can listen to.']);
   const rate = await choose('Speaking speed', ['Normal', 'A little slower (-8%)', 'A little faster (+8%)'],
     e.TTS_RATE === '-8%' ? 2 : e.TTS_RATE === '+8%' ? 3 : 1);
   e.TTS_RATE = ['+0%', '-8%', '+8%'][rate - 1];
 
-  process.stdout.write(c.d('   test: generating a short Urdu sample… '));
+  process.stdout.write(c.d('   test: generating a short English sample… '));
   const tmp = path.join(os.tmpdir(), `wz-${Date.now()}`);
-  fs.writeFileSync(`${tmp}.txt`, 'السلام علیکم، یہ آواز کا ایک مختصر نمونہ ہے۔');
-  const r = sh(e.PYTHON_BIN, [script, 'speak', '--voice', e.VOICES_UR.split(':')[0], '--text-file', `${tmp}.txt`, '--out', `${tmp}.mp3`, '--meta', `${tmp}.json`], { timeout: 90_000 });
+  fs.writeFileSync(`${tmp}.txt`, 'Hi! This is a short test of the free voice.');
+  const r = sh(e.PYTHON_BIN, [script, 'speak', '--voice', 'en-US-AndrewMultilingualNeural', '--text-file', `${tmp}.txt`, '--out', `${tmp}.mp3`, '--meta', `${tmp}.json`], { timeout: 90_000 });
   const words = r.status === 0 ? JSON.parse(fs.readFileSync(`${tmp}.json`, 'utf8')).length : 0;
   console.log(r.status === 0 ? c.g(`ok (${words} word timings for captions)`) : c.r('failed'));
   if (r.status !== 0) warn((r.stderr || '').slice(-300));
@@ -384,14 +315,7 @@ async function elevenStep(e) {
   e.ELEVEN_API_KEY = await askUntil('ElevenLabs API key', e.ELEVEN_API_KEY || '', async (v) => {
     try { voices = await elevenVoices(v); return null; } catch (err) { return err.message; }
   });
-  ok(`Key works. ${voices.length} voices in your account.`);
-  help([
-    `For good ${c.b('Urdu')} voices: https://elevenlabs.io/app/voice-library → filter Language: Urdu (or Hindi)`,
-    '→ "Add to my voices" on the ones you like. Then type  r  here to reload the list.',
-  ]);
-  const reload = () => elevenVoices(e.ELEVEN_API_KEY);
-  e.VOICES_EN = await pickVoices('English', voices, e.VOICES_EN, reload);
-  e.VOICES_UR = await pickVoices('Urdu', voices, e.VOICES_UR, reload);
+  ok(`Key works. You pick the voice on WhatsApp from short samples.`);
 }
 
 function findClaude(current) {
@@ -585,7 +509,7 @@ async function linkWhatsApp(e, botNumber) {
     if (r.status >= 300) { bad(`Could not create WhatsApp instance: ${JSON.stringify(r.body).slice(0, 200)}`); process.exit(1); }
   }
   const wh = await evo(e, 'POST', `/webhook/set/${name}`, {
-    webhook: { enabled: true, url: `${e.SELF_URL}/webhook/${e.WEBHOOK_SECRET}`, byEvents: false, base64: true, events: ['MESSAGES_UPSERT'] },
+    webhook: { enabled: true, url: `${e.SELF_URL}/webhook/${e.WEBHOOK_SECRET}`, byEvents: false, base64: true, events: ['MESSAGES_UPSERT', 'MESSAGES_UPDATE'] },
   });
   if (wh.status >= 300) warn(`Webhook not set: ${JSON.stringify(wh.body).slice(0, 200)}`); else ok('Webhook set');
 

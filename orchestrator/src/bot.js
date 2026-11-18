@@ -6,12 +6,14 @@ import { createJob, currentJob, saveJob, loadPlan } from './jobs.js';
 import { extractText, detectLanguage } from './extract.js';
 import { askClaude, ClaudeLimitError } from './claude.js';
 import { validatePlan } from './plan.js';
-import { speak, sampleText } from './tts.js';
 import { buildProps, renderVideo } from './render.js';
 import { uploadVideo } from './youtube.js';
-import { serial, exists } from './util.js';
+import { serial, exists, readJson, writeJson } from './util.js';
+import { voicePage, sampleFor, sameService, currentFamily } from './voices.js';
 
-const fileUrl = (job, rel) => `${cfg.selfUrl}/files/${cfg.secret}/${job.id}/${rel}`;
+const toUrl = (p) => p.split(path.sep).join('/');
+const fileUrl = (job, rel) => `${cfg.selfUrl}/files/${cfg.secret}/${job.id}/${toUrl(rel)}`;
+const sampleUrl = (rel) => `${cfg.selfUrl}/samples/${cfg.secret}/${toUrl(path.relative('voice-samples', rel))}`;
 const BUSY = new Set(['PLANNING', 'SAMPLING', 'PRODUCING', 'EDITING', 'UPLOADING']);
 // whole message must be an approval word, so "ok, but make the title bigger" is an edit
 const APPROVE = /^\s*(ok|okay|yes|approve|approved|publish|upload|haan|han|theek|theek hai|ٹھیک|ٹھیک ہے|ہاں|done)[\s.!👍✅]*$/i;
@@ -19,7 +21,8 @@ const LIMIT_RETRY_MIN = 30;
 
 const HELP = [
   'Send me a script as a *PDF, DOCX or TXT* (or paste a long text) and I will make a video.',
-  'Commands: `status`, `retry`, `undo` (revert last change), `voice 2` (switch voice), `cancel`, `version`.',
+  'I ask you everything with tap-to-choose polls (you can also reply with the option number).',
+  'Commands: `status`, `retry`, `undo`, `change voice`, `forget voice`, `cancel`, `version`.',
 ].join('\n');
 
 /** Is a video being made right now? (the supervisor waits for this before restarting) */
@@ -29,6 +32,123 @@ export async function isBusy() {
 }
 
 export const readVersion = async () => (await fs.readFile(path.join(ROOT, 'VERSION'), 'utf8').catch(() => 'dev')).trim();
+
+// ---------------------------------------------------------------------------------------
+// Saved preferences (data/prefs.json): { voices: { en: {id,name,provider,family,mode}, ur: {...} } }
+const PREFS = () => path.join(cfg.dataDir, 'prefs.json');
+const loadPrefs = async () => readJson(PREFS()).catch(() => ({ voices: {} }));
+const savePrefs = (p) => writeJson(PREFS(), p);
+
+// ---------------------------------------------------------------------------------------
+// Choices: a WhatsApp poll (tap to choose). Typing the option number also works.
+
+async function ask(job, kind, question, options, extra = {}) {
+  const labels = options.map((o, i) => `${i + 1}. ${o.label}`);
+  let pollId = null;
+  try {
+    pollId = await wa.sendPoll(`${question} (tap one, or reply 1-${options.length})`, labels);
+  } catch (e) {
+    console.error('poll failed, falling back to text', e.message);
+    await wa.sendText(`${question}\n${labels.join('\n')}\n\nReply with the number.`);
+  }
+  job.choice = { kind, pollId, options, ...extra };
+  job.state = kind === 'approve' ? 'AWAIT_APPROVAL' : 'AWAIT_CHOICE';
+  await saveJob(job);
+}
+
+/** Map a poll vote ("2. Ava") or a typed reply ("2", "ava") to one of the current options. */
+function matchOption(choice, answer, fromPoll = false) {
+  if (!choice || answer == null) return null;
+  const a = String(answer).trim().toLowerCase();
+  // poll options are numbered "N. label"; a typed reply must be a bare number,
+  // so an edit like "3 scenes shorter" is never mistaken for option 3
+  const n = fromPoll ? a.match(/^(\d{1,2})[.)]/) : a.match(/^(\d{1,2})[.)]?$/);
+  if (n) return choice.options[Number(n[1]) - 1] || null;
+  const plain = (x) => x.toLowerCase().replace(/^[^\p{L}\p{N}]+/u, '').trim();
+  return choice.options.find((o) => plain(o.label) === plain(a) || (o.name && o.name.toLowerCase() === a)) || null;
+}
+
+async function onChoice(job, option) {
+  const choice = job.choice;
+  job.choice = null;
+  await saveJob(job);
+  const v = option.value;
+  switch (choice.kind) {
+    case 'voice':
+      if (v === 'more') return runStep(job, 'voices', { page: choice.page + 1, after: choice.after });
+      if (v === 'restart') return runStep(job, 'voices', { page: 0, after: choice.after });
+      return voiceChosen(job, v, choice.after);
+    case 'keepVoice': {
+      const prefs = await loadPrefs();
+      prefs.voices ||= {};
+      prefs.voices[job.language] = { ...job.voice, mode: v };
+      await savePrefs(prefs);
+      await wa.sendText(v === 'always'
+        ? `👍 I'll use *${job.voice.name}* for your next ${job.language === 'ur' ? 'Urdu' : 'English'} videos. Send \`change voice\` any time.`
+        : '👍 I will ask you to pick a voice for every video.');
+      return choice.after === 'produce' ? runStep(job, 'produce') : askFormat(job);
+    }
+    case 'format':
+      job.formats = v === 'both' ? ['long', 'short'] : [v];
+      return runStep(job, 'produce');
+    case 'approve':
+      if (v === 'upload') return runStep(job, 'publish');
+      if (v === 'voice') return runStep(job, 'voices', { page: 0, after: 'produce' });
+      if (v === 'undo') return undo(job);
+      if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled. Send a new script whenever you like.'); }
+      if (v === 'edit') {
+        job.state = 'AWAIT_APPROVAL';
+        await saveJob(job);
+        return wa.sendText('✏️ Type what to change, for example:\n• "make scene 3 shorter"\n• "use green colors"\n• "title: My new title"');
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+async function voiceChosen(job, voice, after) {
+  job.voice = { id: voice.id, name: voice.name, provider: cfg.tts.provider, family: currentFamily() };
+  await saveJob(job);
+  const prefs = await loadPrefs();
+  const saved = prefs.voices?.[job.language];
+  if (saved?.mode === 'always' && saved.id === voice.id) {
+    return after === 'produce' ? runStep(job, 'produce') : askFormat(job);
+  }
+  return ask(job, 'keepVoice', `Use *${voice.name}* for your next videos too?`, [
+    { label: `Yes, always use ${voice.name}`, value: 'always' },
+    { label: 'No, ask me every time', value: 'ask' },
+  ], { after });
+}
+
+async function askFormat(job) {
+  const est = job.estSeconds || 60;
+  const long = est > 180;
+  return ask(job, 'format', `Your video will be about ${fmt(est)}. Which format?`, [
+    { label: 'Long video 16:9', value: 'long' },
+    { label: `YouTube Short 9:16${long ? ' (over 3 min: posts as normal vertical video)' : ''}`, value: 'short' },
+    { label: 'Both', value: 'both' },
+  ]);
+}
+
+async function askApproval(job) {
+  const opts = [
+    { label: '✅ Upload to YouTube', value: 'upload' },
+    { label: '✏️ Change something', value: 'edit' },
+    { label: '🎙 Change voice', value: 'voice' },
+  ];
+  if (await exists(path.join(job.dir, 'plan.prev.json'))) opts.push({ label: '↩️ Undo last change', value: 'undo' });
+  opts.push({ label: '🗑 Cancel this video', value: 'cancel' });
+  return ask(job, 'approve', 'What next?', opts);
+}
+
+async function undo(job) {
+  const prev = path.join(job.dir, 'plan.prev.json');
+  if (!(await exists(prev))) return wa.sendText('Nothing to undo.');
+  await fs.copyFile(prev, path.join(job.dir, 'plan.json'));
+  await fs.rm(prev, { force: true });
+  return runStep(job, 'produce');
+}
 
 // ---------------------------------------------------------------------------------------
 // Steps. Each one is retryable: its name is stored in job.lastStep before it runs.
@@ -47,48 +167,52 @@ const steps = {
       if (errs.length) throw new Error(`Plan still invalid: ${errs.slice(0, 3).join('; ')}`);
     }
     job.language = plan.language;
+    const chars = plan.scenes.reduce((a, s) => a + s.narration.length, 0);
+    job.estSeconds = Math.round(chars / (plan.language === 'ur' ? 13 : 15));
     await saveJob(job);
-    return steps.samples(job);
+    await wa.sendText(`📝 *${plan.title}*\n${plan.scenes.length} scenes, about ${fmt(job.estSeconds)}.`);
+
+    const saved = (await loadPrefs()).voices?.[job.language];
+    if (saved?.mode === 'always' && sameService(saved)) {
+      job.voice = { id: saved.id, name: saved.name, provider: saved.provider, family: saved.family };
+      await saveJob(job);
+      await wa.sendText(`🎙 Using your saved voice *${saved.name}*. (Send \`change voice\` to pick another.)`);
+      return askFormat(job);
+    }
+    return steps.voices(job, { page: 0, after: 'format' });
   },
 
-  async samples(job) {
+  // Send up to 6 voice samples (cached after the first time) and a poll to pick one.
+  async voices(job, { page = 0, after = 'format' } = {}) {
     job.state = 'SAMPLING';
     await saveJob(job);
-    const plan = await loadPlan(job);
-    let voices = plan.language === 'ur' ? cfg.voicesUr : cfg.voicesEn;
-    if (!voices.length) voices = [...cfg.voicesUr, ...cfg.voicesEn];
-    voices = voices.slice(0, 4);
-    if (!voices.length) throw new Error('No voices configured (VOICES_EN / VOICES_UR in .env)');
+    const lang = job.language || 'en';
+    let { voices, more } = await voicePage(lang, page);
+    if (!voices.length && page > 0) ({ voices, more } = await voicePage(lang, (page = 0)));
+    if (!voices.length) throw new Error('No voices available for this voice service.');
 
-    const text = sampleText(plan.scenes.map((s) => s.narration).join(' '));
-    await fs.mkdir(path.join(job.dir, 'samples'), { recursive: true });
-    await wa.sendText(`*${plan.title}*\n${plan.scenes.length} scenes. Here are ${voices.length} voice samples:`);
-    for (let i = 0; i < voices.length; i++) {
-      const rel = `samples/v${i + 1}.mp3`;
-      await speak(text, voices[i].id, path.join(job.dir, rel), plan.language);
-      await wa.sendText(`Voice ${i + 1}: ${voices[i].name}`);
-      await wa.sendAudio(fileUrl(job, rel));
+    // generate missing samples, 3 at a time
+    const rels = new Array(voices.length);
+    for (let i = 0; i < voices.length; i += 3) {
+      await Promise.all(voices.slice(i, i + 3).map(async (v, k) => { rels[i + k] = await sampleFor(v, lang); }));
     }
-    const chars = plan.scenes.reduce((a, s) => a + s.narration.length, 0);
-    const estSec = Math.round(chars / (plan.language === 'ur' ? 13 : 15));
-    job.voices = voices;
-    job.estSeconds = estSec;
-    job.state = 'AWAIT_VOICE';
-    await saveJob(job);
-    await wa.sendText(
-      `Estimated length ~${fmt(estSec)}` + (cfg.tts.provider === 'elevenlabs' ? ` (${chars} characters of ElevenLabs credit)` : '') + '.\n' +
-      'Reply with the voice number and the format:\n' +
-      '`2 L` = long video 16:9\n`2 S` = YouTube Short 9:16\n`2 B` = both\n' +
-      `Just \`2\` picks ${estSec <= 75 ? 'Short' : 'Long'} automatically.`,
-    );
+    await wa.sendText(`🎧 ${page === 0 ? 'Pick a voice' : 'More voices'}: listen to each sample (about 5 seconds).`);
+    for (let i = 0; i < voices.length; i++) {
+      await wa.sendText(`${i + 1}. *${voices[i].name}*: ${voices[i].desc}`);
+      await wa.sendAudio(sampleUrl(rels[i]));
+    }
+    const options = voices.map((v) => ({ label: v.name, name: v.name, value: v }));
+    if (more) options.push({ label: '➡️ More voices', value: 'more' });
+    else if (page > 0) options.push({ label: '🔁 Back to first voices', value: 'restart' });
+    return ask(job, 'voice', 'Which voice do you like?', options, { page, after });
   },
 
   async produce(job) {
     job.state = 'PRODUCING';
     await saveJob(job);
     const plan = await loadPlan(job);
-    await wa.sendText(`Making the voiceover and video (${job.formats.join(' + ')}) with ${job.voice.name}. This takes a few minutes…`);
-    const { seconds, charsSpent } = await buildProps(job, plan);
+    await wa.sendText(`🎬 Making the voiceover and video (${job.formats.join(' + ')}) with ${job.voice.name}. This takes a few minutes…`);
+    const { seconds } = await buildProps(job, plan);
     job.seconds = seconds;
     for (const f of job.formats) {
       job.outputs[f] = await renderVideo(job, f);
@@ -104,11 +228,7 @@ const steps = {
     if (job.formats.includes('short') && seconds > 180) {
       await wa.sendText('⚠️ The Short is over 3 minutes, so YouTube will treat it as a normal vertical video.');
     }
-    await wa.sendText(
-      (charsSpent && cfg.tts.provider === 'elevenlabs' ? `Voice credits used now: ${charsSpent} characters.\n` : '') +
-      'Reply `ok` to upload to YouTube, or tell me what to change, e.g.\n' +
-      '• "scene 3 ka text chota karo"\n• "make the colors green"\n• "title: My new title"\n• `voice 3` / `undo`',
-    );
+    return askApproval(job);
   },
 
   async edit(job, request) {
@@ -120,7 +240,8 @@ const steps = {
       await fs.copyFile(path.join(job.dir, 'plan.prev.json'), path.join(job.dir, 'plan.json'));
       job.state = 'AWAIT_APPROVAL';
       await saveJob(job);
-      return wa.sendText(`I can't do that one: ${reply.replace(/^CANNOT:\s*/i, '')}`);
+      await wa.sendText(`I can't do that one: ${reply.replace(/^CANNOT:\s*/i, '')}`);
+      return askApproval(job);
     }
     const errs = validatePlan(await loadPlan(job).catch(() => null));
     if (errs.length) {
@@ -135,7 +256,7 @@ const steps = {
     job.state = 'UPLOADING';
     await saveJob(job);
     const plan = await loadPlan(job);
-    await wa.sendText('Uploading to YouTube…');
+    await wa.sendText('⬆️ Uploading to YouTube…');
     for (const f of job.formats) {
       if (job.uploads[f]) continue;
       job.uploads[f] = await uploadVideo({
@@ -155,7 +276,7 @@ const steps = {
     const links = job.formats.map((f) => `${f === 'short' ? 'Short' : 'Long'}: ${job.uploads[f]}`).join('\n');
     await wa.sendText(
       `✅ Uploaded (${cfg.yt.privacy}).\n${links}` +
-      (cfg.yt.privacy === 'private' ? '\nOpen YouTube Studio to make it public or schedule it (or set YT_PRIVACY=public).' : ''),
+      (cfg.yt.privacy === 'private' ? '\nOpen YouTube Studio to make it public or schedule it.' : ''),
     );
   },
 };
@@ -205,12 +326,34 @@ async function startJob(saveSource) {
   const words = text.split(/\s+/).filter(Boolean).length;
   await wa.sendText(
     `Got it, reading your script${words ? ` (~${words} words, ${detectLanguage(text) === 'ur' ? 'Urdu' : 'English'})` : ''}. ` +
-    "I'll send voice samples shortly.",
+    "I'll be back with voice options in a minute or two.",
   );
   await runStep(job, 'plan');
 }
 
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const handledPolls = new Set(); // a vote can arrive twice (upsert + update); act once
+
+async function handleVote(pollId, selected) {
+  const job = await currentJob();
+  if (!job?.choice || !pollId || job.choice.pollId !== pollId) return; // old or unrelated poll
+  if (!selected.length) {
+    return wa.sendText('I could not read that vote. Please reply with the option number instead.');
+  }
+  const key = `${pollId}:${selected.join('|')}`;
+  if (handledPolls.has(key)) return;
+  handledPolls.add(key);
+  const opt = matchOption(job.choice, selected[0], true);
+  if (!opt) return wa.sendText('Please reply with the option number.');
+  console.log(`${ts()} [in] poll vote "${selected[0]}"`);
+  return onChoice(job, opt);
+}
+
+/** messages.update with aggregated poll results */
+export async function onPollUpdate(d) {
+  const selected = (d.pollUpdates || []).filter((o) => (o.voters || []).length).map((o) => o.name);
+  return handleVote(d.keyId || d.key?.id, selected);
+}
 
 export async function onMessage(data) {
   const k = data?.key || {};
@@ -224,6 +367,9 @@ export async function onMessage(data) {
   }
   const msg = wa.parseMessage(data);
   if (!msg) return;
+
+  if (msg.kind === 'poll') return handleVote(msg.pollId, msg.selected);
+
   console.log(`${ts()} [in] ${msg.kind === 'doc' ? `document ${msg.fileName}` : `text "${msg.text.slice(0, 60)}"`}`);
 
   if (msg.kind === 'doc') {
@@ -241,7 +387,7 @@ export async function onMessage(data) {
   }
 
   const text = msg.text;
-  const lower = text.toLowerCase();
+  const lower = text.toLowerCase().trim();
   const job = await currentJob();
 
   if (lower === 'help' || lower === 'menu') return wa.sendText(HELP);
@@ -249,8 +395,14 @@ export async function onMessage(data) {
   if (lower === 'status') {
     return wa.sendText(job ? `Current video: ${job.id}, state: ${job.state}` : 'No video in progress.');
   }
+  if (lower === 'forget voice' || lower === 'reset voice') {
+    const prefs = await loadPrefs();
+    prefs.voices = {};
+    await savePrefs(prefs);
+    return wa.sendText('🎙 Saved voice cleared. I will ask you to pick a voice next time.');
+  }
   if (lower === 'cancel') {
-    if (job) { job.state = 'CANCELLED'; await saveJob(job); }
+    if (job) { job.state = 'CANCELLED'; job.choice = null; await saveJob(job); }
     return wa.sendText('Cancelled. Send a new script whenever you like.');
   }
 
@@ -273,16 +425,19 @@ export async function onMessage(data) {
     return runStep(job, job.lastStep.name, job.lastStep.arg);
   }
 
-  if (job.state === 'AWAIT_VOICE') {
-    const m = text.match(/^\s*(\d)\s*([lsb])?\s*$/i);
-    const n = m ? Number(m[1]) : 0;
-    if (!m || n < 1 || n > (job.voices?.length || 0)) {
-      return wa.sendText(`Reply with a voice number 1-${job.voices?.length || 4}, optionally with L / S / B (e.g. \`2 L\`).`);
+  if (/^(change )?voices?$/.test(lower) && job.language && job.state !== 'FAILED') {
+    return runStep(job, 'voices', { page: 0, after: job.outputs && Object.keys(job.outputs).length ? 'produce' : 'format' });
+  }
+
+  if (job.state === 'AWAIT_VOICE') return runStep(job, 'voices', { page: 0, after: 'format' }); // job from an older version
+
+  // a typed answer to the current poll (number or option name)
+  if (job.choice) {
+    const opt = matchOption(job.choice, text);
+    if (opt) return onChoice(job, opt);
+    if (job.choice.kind !== 'approve') {
+      return wa.sendText(`Please tap an option in the poll above, or reply with its number (1-${job.choice.options.length}).`);
     }
-    job.voice = job.voices[n - 1];
-    const f = (m[2] || (job.estSeconds <= 75 ? 's' : 'l')).toLowerCase();
-    job.formats = f === 'b' ? ['long', 'short'] : f === 's' ? ['short'] : ['long'];
-    return runStep(job, 'produce');
   }
 
   if (job.state === 'FAILED' && !Object.keys(job.outputs || {}).length) {
@@ -291,19 +446,8 @@ export async function onMessage(data) {
 
   if (job.state === 'AWAIT_APPROVAL' || job.state === 'FAILED') {
     if (APPROVE.test(text)) return runStep(job, 'publish');
-    const v = lower.match(/^voice\s*(\d)$/);
-    if (v) {
-      const n = Number(v[1]);
-      if (!job.voices?.[n - 1]) return wa.sendText('No such voice.');
-      job.voice = job.voices[n - 1];
-      return runStep(job, 'produce');
-    }
-    if (lower === 'undo') {
-      const prev = path.join(job.dir, 'plan.prev.json');
-      if (!(await exists(prev))) return wa.sendText('Nothing to undo.');
-      await fs.copyFile(prev, path.join(job.dir, 'plan.json'));
-      return runStep(job, 'produce');
-    }
+    if (lower === 'undo') return undo(job);
+    job.choice = null;
     return runStep(job, 'edit', text);
   }
 
@@ -318,6 +462,9 @@ export async function recover() {
   if (before && before !== now) await wa.sendText(`🔄 Bot updated: ${before} → ${now}`).catch(() => {});
   await fs.writeFile(marker, now).catch(() => {});
 
+  // make sure Evolution also sends poll results (messages.update)
+  await wa.ensureWebhook().catch((e) => console.error('webhook update failed', e.message));
+
   const job = await currentJob();
   if (job && BUSY.has(job.state)) {
     job.failedFrom = job.state;
@@ -331,3 +478,4 @@ function fmt(sec) {
   const s = Math.round(sec);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 }
+

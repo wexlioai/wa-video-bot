@@ -47,6 +47,24 @@ export function sendVideo(fileUrl, caption, asDocument = false, fileName = 'vide
   });
 }
 
+/** Subscribe the webhook to message upserts AND updates (poll results arrive as updates too). */
+export function ensureWebhook() {
+  return evo('POST', `/webhook/set/${inst()}`, {
+    webhook: {
+      enabled: true, url: `${cfg.selfUrl}/webhook/${cfg.secret}`, byEvents: false, base64: true,
+      events: ['MESSAGES_UPSERT', 'MESSAGES_UPDATE'],
+    },
+  });
+}
+
+/** Tap-to-choose poll (WhatsApp Web can't show buttons/lists). Returns the poll message id. */
+export async function sendPoll(question, options) {
+  const r = await evo('POST', `/message/sendPoll/${inst()}`, {
+    number: to(), name: question.slice(0, 250), selectableCount: 1, values: options.map((o) => o.slice(0, 100)),
+  });
+  return r?.key?.id;
+}
+
 export function sendImage(fileUrl, caption) {
   return evo('POST', `/message/sendMedia/${inst()}`, {
     number: to(), mediatype: 'image', mimetype: 'image/png', caption: `${BOT_TAG} ${caption}`, media: fileUrl, fileName: 'screen.png',
@@ -85,9 +103,19 @@ export function isFromOwner(data) {
   return k.fromMe !== true && ownerChat;
 }
 
-/** Returns {kind:'text', text} | {kind:'doc', fileName, mimetype} | null */
+/** Returns {kind:'text', text} | {kind:'doc', fileName, mimetype} | {kind:'poll', pollId, selected[]} | null */
 export function parseMessage(data) {
   const m = data?.message || {};
+  const pu = m.pollUpdateMessage;
+  if (pu || data?.messageType === 'pollUpdateMessage') {
+    // Evolution decrypts the vote and puts the chosen option names in vote.selectedOptions,
+    // plus pollUpdates: [{name, voters[]}]
+    let selected = (pu?.vote?.selectedOptions || []).filter((x) => typeof x === 'string');
+    if (!selected.length && Array.isArray(data.pollUpdates)) {
+      selected = data.pollUpdates.filter((o) => (o.voters || []).length).map((o) => o.name);
+    }
+    return { kind: 'poll', pollId: pu?.pollCreationMessageKey?.id, selected };
+  }
   const doc = m.documentMessage || m.documentWithCaptionMessage?.message?.documentMessage;
   if (doc) {
     return { kind: 'doc', fileName: doc.fileName || 'script', mimetype: doc.mimetype || '', caption: doc.caption || '' };
