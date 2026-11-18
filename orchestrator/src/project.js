@@ -98,7 +98,7 @@ export function describeSettings(s) {
 }
 
 // ------------------------------------------------------------------ versions
-const VERSIONED = ['plan.json', 'settings.json', 'scenes'];
+const VERSIONED = ['plan.json', 'settings.json', 'look.json', 'scenes'];
 
 async function copyDir(src, dst) {
   await fs.mkdir(dst, { recursive: true });
@@ -152,4 +152,43 @@ export async function restoreVersion(job, n) {
       await copyDir(src, dst);
     } else await fs.copyFile(src, dst);
   }
+}
+
+// ------------------------------------------------------------------ typed tweaks
+// A typed change that is only about these settings is applied without Claude.
+const TWEAK_PATTERNS = [
+  ['subs-bigger', /\b(bigger|larger|increase|big)\b.*\b(subtitles?|captions?|subs)\b|\b(subtitles?|captions?|subs)\b.*\b(bigger|larger|increase|big)\b/i],
+  ['subs-smaller', /\b(smaller|decrease|reduce|small)\b.*\b(subtitles?|captions?|subs)\b|\b(subtitles?|captions?|subs)\b.*\b(smaller|decrease|reduce|small)\b/i],
+  ['subs-top', /\b(subtitles?|captions?|subs)\b.*\b(top|up)\b|\b(top)\b.*\b(subtitles?|captions?|subs)\b/i],
+  ['subs-middle', /\b(subtitles?|captions?|subs)\b.*\b(middle|center|centre)\b/i],
+  ['subs-bottom', /\b(subtitles?|captions?|subs)\b.*\b(bottom|down)\b/i],
+  ['subs-off', /\b(no|remove|hide|without|turn off|disable)\b.*\b(subtitles?|captions?|subs)\b|\b(subtitles?|captions?|subs)\b.*\b(off)\b/i],
+  ['voice-slower', /\b(slower|slow down|slowly)\b.*\b(voice|speech|narration|speak\w*|talk\w*)\b|\b(voice|speech|narration|speak\w*)\b.*\b(slower|slow)\b/i],
+  ['voice-faster', /\b(faster|speed up|quicker)\b.*\b(voice|speech|narration|speak\w*|talk\w*)\b|\b(voice|speech|narration|speak\w*)\b.*\b(faster|quick|fast)\b/i],
+  ['music-quieter', /\b(music)\b.*\b(quieter|lower|softer|down|less)\b|\b(quieter|lower|softer)\b.*\bmusic\b/i],
+  ['music-louder', /\b(music)\b.*\b(louder|higher|up|more)\b|\blouder\b.*\bmusic\b/i],
+  ['music-off', /\b(no|remove|without|turn off)\b.*\bmusic\b|\bmusic\b.*\boff\b/i],
+  ['motion-calmer', /\b(calmer|calm|less (motion|movement|animation)|slower animations?)\b/i],
+  ['motion-livelier', /\b(livelier|more (motion|movement|animation|energy|energetic)|faster animations?)\b/i],
+];
+
+/** Tweak keys if EVERY part of the message is a settings tweak, else null (→ Claude). */
+export function parseTweaks(text) {
+  const parts = String(text).split(/\s*(?:,|;|\n|\band\b|\balso\b|\bplus\b)\s*/i).map((x) => x.trim()).filter((x) => x.length > 1);
+  if (!parts.length) return null;
+  const keys = [];
+  for (let part of parts) {
+    let hit = TWEAK_PATTERNS.find(([, re]) => re.test(part));
+    // "bigger subtitles and move them to the top": the second part is still about subtitles
+    const prev = keys[keys.length - 1] || '';
+    if (!hit && prev) {
+      const subject = prev.startsWith('subs') ? 'subtitles' : prev.startsWith('voice') ? 'voice' : prev.startsWith('music') ? 'music' : '';
+      if (subject) { part = `${part} ${subject}`; hit = TWEAK_PATTERNS.find(([, re]) => re.test(part)); }
+    }
+    if (!hit) return null;
+    // "no subtitles" also matches "smaller"? prefer the most specific: off > position > size
+    const all = TWEAK_PATTERNS.filter(([, re]) => re.test(part)).map(([k]) => k);
+    keys.push(all.includes('subs-off') ? 'subs-off' : all.includes('music-off') ? 'music-off' : all[0]);
+  }
+  return [...new Set(keys)];
 }

@@ -12,7 +12,7 @@ import { serial, exists, readJson, writeJson, queueLength } from './util.js';
 import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
 import { startProgress } from './progress.js';
 import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk, gsapPath } from './motion.js';
-import { initSettings, snapshotVersion } from './project.js';
+import { initSettings, snapshotVersion, restoreVersion, loadSettings, saveSettings, applyTweaks, parseTweaks, TWEAKS, normalizeSettings } from './project.js';
 import { styleLibrary } from './look.js';
 import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText, loadLook } from './look.js';
 import { designScenes, storyboard, acceptEditedScenes, reviewScenes } from './designer.js';
@@ -67,6 +67,7 @@ async function ask(job, kind, question, options, extra = {}) {
   const seq = Date.now().toString(36);
   let pollId = null;
   let style = await choiceStyle();
+  if (extra.multi && style === 'list') style = 'poll';
   if (style === 'list') {
     try {
       await wa.sendList(question, `${question}\n(or reply with a number 1-${options.length})`, BUTTON[kind] || 'Choose',
@@ -85,13 +86,15 @@ async function ask(job, kind, question, options, extra = {}) {
   }
   if (style === 'poll') {
     try {
-      pollId = await wa.sendPoll(`${question} (tap one, or reply 1-${options.length})`, labels);
+      pollId = extra.multi
+        ? await wa.sendPoll(`${question} (tick all you want, then tick the last option; or reply e.g. 1 3)`, labels, options.length)
+        : await wa.sendPoll(`${question} (tap one, or reply 1-${options.length})`, labels);
     } catch (e) {
       console.error('poll failed, falling back to text', e.message);
       style = 'text';
     }
   }
-  if (style === 'text') await wa.sendText(`${question}\n${labels.join('\n')}\n\nReply with the number.`);
+  if (style === 'text') await wa.sendText(`${question}\n${labels.join('\n')}\n\nReply with the number${extra.multi ? 's (e.g. 1 3)' : ''}.`);
   job.choice = { kind, pollId, seq, options, ...extra };
   job.state = kind === 'approve' ? 'AWAIT_APPROVAL' : 'AWAIT_CHOICE';
   await saveJob(job);
@@ -155,6 +158,19 @@ async function onChoice(job, option) {
         : '👍 I will show you 3 looks for every video.');
       return afterLook(job, choice.after);
     }
+    case 'saveDefault': {
+      const prefs = await loadPrefs();
+      if (v === 'yes') {
+        prefs.defaultSettings = normalizeSettings({ ...(prefs.defaultSettings || {}), ...job.pendingDefault.patch });
+        await wa.sendText('👍 Saved as your default for new videos.');
+      } else {
+        prefs.declinedDefaults = [...new Set([...(prefs.declinedDefaults || []), job.pendingDefault.key])];
+      }
+      await savePrefs(prefs);
+      job.pendingDefault = null;
+      await saveJob(job);
+      return askApproval(job);
+    }
     case 'storyboard':
       if (v === 'go') { job.storyboardOk = true; return runStep(job, 'produce'); }
       if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
@@ -170,11 +186,13 @@ async function onChoice(job, option) {
       if (v === 'voice') return runStep(job, 'voices', { page: 0, after: 'produce' });
       if (v === 'look') { job.forceLookChoice = true; return runStep(job, 'direct', { after: 'produce' }); }
       if (v === 'undo') return undo(job);
+      if (v === 'tweaks') return askTweaks(job);
+      if (v === 'suggest') return askSuggestions(job);
       if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled. Send a new script whenever you like.'); }
       if (v === 'edit') {
         job.state = 'AWAIT_APPROVAL';
         await saveJob(job);
-        return wa.sendText('✏️ Type what to change, for example:\n• "make scene 3 shorter"\n• "use green colors"\n• "title: My new title"');
+        return wa.sendText('✏️ Type what to change in your own words, for example:\n• "at 0:42 show a map instead of the chart"\n• "scene 3: warmer colours"\n• "bigger subtitles at the top"\n• "change the title to …"\nTimes, scene numbers or quoting the words all work.');
       }
       return null;
     default:
@@ -207,18 +225,28 @@ async function askFormat(job) {
 }
 
 async function askApproval(job) {
+  if (job.pendingDefault) return askSaveDefault(job);
   const opts = [
     { label: '✅ Upload to YouTube', value: 'upload' },
-    { label: '✏️ Change something', value: 'edit' },
-    { label: '🎙 Change voice', value: 'voice' },
-    { label: '🎨 Change look', value: 'look' },
+    { label: '⚡ Quick tweaks (subtitles, voice speed…)', value: 'tweaks' },
+    { label: '✏️ Change something (type it)', value: 'edit' },
   ];
-  if (await exists(path.join(job.dir, 'plan.prev.json'))) opts.push({ label: '↩️ Undo last change', value: 'undo' });
+  if (job.suggestions?.length) opts.push({ label: `💡 ${job.suggestions.length} suggestion${job.suggestions.length > 1 ? 's' : ''} from the review`, value: 'suggest' });
+  opts.push({ label: '🎙 Change voice', value: 'voice' }, { label: '🎨 Change look', value: 'look' });
+  if ((job.version || 0) > 1 || (await exists(path.join(job.dir, 'plan.prev.json')))) opts.push({ label: '↩️ Undo last change', value: 'undo' });
   opts.push({ label: '🗑 Cancel this video', value: 'cancel' });
   return ask(job, 'approve', 'What next?', opts);
 }
 
 async function undo(job) {
+  if ((job.version || 0) > 1) {
+    const back = job.version - 1;
+    await restoreVersion(job, back);
+    job.changeNote = `undo (back to v${back})`;
+    await saveJob(job);
+    await wa.sendText(`↩️ Going back to version ${back}…`);
+    return runStep(job, 'produce');
+  }
   const prev = path.join(job.dir, 'plan.prev.json');
   if (!(await exists(prev))) return wa.sendText('Nothing to undo.');
   await fs.copyFile(prev, path.join(job.dir, 'plan.json'));
@@ -228,6 +256,144 @@ async function undo(job) {
 
 // ---------------------------------------------------------------------------------------
 // Steps. Each one is retryable: its name is stored in job.lastStep before it runs.
+
+// ---------------------------------------------------------------------------------------
+// Changes after the preview: quick tweaks (no Claude), review suggestions, typed changes.
+
+const TWEAK_MENU = ['subs-bigger', 'subs-smaller', 'subs-top', 'subs-bottom', 'subs-off', 'subs-style', 'voice-slower', 'voice-faster', 'motion-calmer', 'motion-livelier'];
+
+async function askTweaks(job) {
+  const s = await loadSettings(job);
+  const now = `Now: subtitles ${s.captions.position === 'off' ? 'off' : `${s.captions.size}, ${s.captions.position}, ${s.captions.style}`}; voice ${s.voice.speed.toFixed(2)}×; motion ${s.motion.energy}.`;
+  await wa.sendText(`⚡ ${now}`);
+  return ask(job, 'tweaks', 'Quick tweaks', [
+    ...TWEAK_MENU.map((k) => ({ label: TWEAKS[k].label, value: k })),
+    { label: '✅ Apply the ticked tweaks', value: 'apply' },
+  ], { multi: true });
+}
+
+async function askSuggestions(job) {
+  const list = job.suggestions || [];
+  if (!list.length) return askApproval(job);
+  await wa.sendText(`💡 Suggestions from the review:\n${list.map((x, i) => `${i + 1}. ${x.text}`).join('\n')}`);
+  return ask(job, 'suggest', 'Which should I do?', [
+    ...list.map((x, i) => ({ label: x.text.slice(0, 90), value: i })),
+    { label: '✅ Apply the ticked ones', value: 'apply' },
+  ], { multi: true });
+}
+
+/** A multi-select poll was confirmed (or numbers typed). */
+async function onMulti(job, picked) {
+  const kind = job.choice?.kind;
+  job.choice = null;
+  await saveJob(job);
+  if (!picked.length) { await wa.sendText('Nothing ticked, so nothing changed.'); return askApproval(job); }
+  if (kind === 'tweaks') return applyTweakKeys(job, picked.map((o) => o.value));
+  if (kind === 'suggest') {
+    const chosen = picked.map((o) => job.suggestions[o.value]).filter(Boolean);
+    job.suggestions = job.suggestions.filter((x) => !chosen.includes(x));
+    await saveJob(job);
+    return runStep(job, 'edit', `Please do these improvements: ${chosen.map((x) => `${x.text}${x.scenes?.length ? ` (scenes ${x.scenes.join(', ')})` : ''}`).join(' | ')}`);
+  }
+  return askApproval(job);
+}
+
+/** Apply settings tweaks and re-render (Claude is not needed). */
+async function applyTweakKeys(job, keys) {
+  const before = await loadSettings(job);
+  const { settings, changes } = applyTweaks(before, keys);
+  if (!changes.length) { await wa.sendText('That is already how it is set.'); return askApproval(job); }
+  await saveSettings(job, settings);
+  job.changeNote = changes.join('; ').slice(0, 120);
+  // learn: the same tweak twice → offer to make it the default
+  const prefs = await loadPrefs();
+  prefs.tweakCounts ||= {};
+  for (const k of keys) prefs.tweakCounts[k] = (prefs.tweakCounts[k] || 0) + 1;
+  await savePrefs(prefs);
+  const repeat = keys.find((k) => prefs.tweakCounts[k] >= 2 && !(prefs.declinedDefaults || []).includes(k));
+  if (repeat) {
+    const patch = repeat.startsWith('subs') ? { captions: settings.captions } : repeat.startsWith('voice') ? { voice: settings.voice } : repeat.startsWith('music') ? { music: settings.music } : { motion: settings.motion };
+    const differs = JSON.stringify(normalizeSettings({ ...(prefs.defaultSettings || {}), ...patch })) !== JSON.stringify(normalizeSettings(prefs.defaultSettings || {}));
+    if (differs) job.pendingDefault = { key: repeat, label: TWEAKS[repeat].label, patch };
+  }
+  await saveJob(job);
+  await wa.sendText(`⚡ Changing: ${changes.join('; ')}. Re-rendering (no new design needed)…`);
+  return runStep(job, 'produce');
+}
+
+async function askSaveDefault(job) {
+  const d = job.pendingDefault;
+  const what = Object.entries(d.patch).map(([k, v]) => `${k}: ${Object.values(v).join(', ')}`).join('; ');
+  return ask(job, 'saveDefault', `You've used "${d.label}" more than once. Make it the default for new videos (${what})?`, [
+    { label: 'Yes, make it my default', value: 'yes' },
+    { label: 'No, just this video', value: 'no' },
+  ]);
+}
+
+/** scene timeline for the change prompt (what is at 0:42?) */
+async function writeTimeline(job, plan) {
+  const props = await readJson(path.join(job.dir, 'props.json')).catch(() => null);
+  if (!props) return;
+  const mmss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  let t = 0;
+  const scenes = props.scenes.map((s, i) => {
+    const d = s.durationInFrames / (props.fps || 30);
+    const row = { n: i + 1, id: s.id, from: mmss(t), to: mmss(t + d), narration: plan.scenes.find((x) => x.id === s.id)?.narration };
+    t += d;
+    return row;
+  });
+  await writeJson(path.join(job.dir, 'timeline.json'), { scenes });
+}
+
+/** A typed change on the new engine: Claude edits scenes / palette / settings / words, then re-render. */
+async function changeVideo(job, request) {
+  const plan = await loadPlan(job);
+  const look = await loadLook(job.dir);
+  const style = (await styleLibrary()).find((x) => x.id === look?.style);
+  await writeTimeline(job, plan);
+  await prepareRefs(job.dir);
+  await fs.rm(path.join(job.dir, 'change.json'), { force: true });
+  const p = await startProgress('✏️ Claude is making your change…');
+  let reply;
+  try {
+    reply = (await askClaude(job.dir, 'change', { REQUEST: request.replace(/"""/g, '"'), STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 40 })).trim();
+  } catch (e) {
+    await p.done();
+    await restoreVersion(job, job.version).catch(() => {});
+    throw e;
+  }
+  await p.done();
+  if (/^CANNOT:/i.test(reply)) {
+    await restoreVersion(job, job.version).catch(() => {});
+    job.state = 'AWAIT_APPROVAL';
+    await saveJob(job);
+    await wa.sendText(`🤔 ${reply.replace(/^CANNOT:\s*/i, '')}`);
+    return askApproval(job);
+  }
+  const newPlan = await loadPlan(job).catch(() => null);
+  const errs = validatePlan(newPlan);
+  if (errs.length) {
+    await restoreVersion(job, job.version).catch(() => {});
+    throw new Error(`The change broke the plan, so I undid it: ${errs[0]}`);
+  }
+  const ch = await readJson(path.join(job.dir, 'change.json')).catch(() => ({}));
+  const newLook = await loadLook(job.dir);
+  if (newLook?.palette) {
+    const pp = newLook.palette;
+    newPlan.theme = { bg: pp.bg, bg2: pp.bg2, primary: pp.primary, accent: pp.accent, text: pp.ink };
+    await writeJson(path.join(job.dir, 'plan.json'), newPlan);
+  }
+  const bad = await acceptEditedScenes(job, { plan: newPlan, look: newLook || look, formats: job.formats });
+  for (const line of bad) { // an edited scene that fails its checks goes back to the previous version
+    const id = line.split(':')[0];
+    await fs.copyFile(path.join(job.dir, 'versions', `v${job.version}`, 'scenes', `${id}.html`), path.join(job.dir, 'scenes', `${id}.html`)).catch(() => {});
+  }
+  if (bad.length) console.log(`${ts()} [${job.id}] edited scenes reverted after failed checks: ${bad.join(' | ').slice(0, 400)}`);
+  await wa.sendText(`✏️ ${String(ch.summary || reply.split('\n').pop()).slice(0, 300)}${ch.narration?.length ? '\n🎙 New words will be re-recorded.' : ''}`);
+  job.changeNote = request.slice(0, 120);
+  await saveJob(job);
+  return steps.produce(job);
+}
 
 /** Continue after the look is set. inStep = we are already inside a running step (serial). */
 function afterLook(job, after, inStep) {
@@ -481,6 +647,7 @@ const steps = {
   async edit(job, request) {
     job.state = 'EDITING';
     await saveJob(job);
+    if ((await loadLook(job.dir)) && job.version && (await motionEngine()) === 'hyperframes') return changeVideo(job, request);
     await fs.copyFile(path.join(job.dir, 'plan.json'), path.join(job.dir, 'plan.prev.json'));
     const p = await startProgress('✏️ Claude is applying your change…');
     let reply;
@@ -644,6 +811,13 @@ async function handleVote(pollId, selected) {
   const key = `${pollId}:${selected.join('|')}`;
   if (handledPolls.has(key)) return;
   handledPolls.add(key);
+  if (job.choice.multi) {
+    // multi-select: act once the last option ("✅ Apply…") is ticked
+    const picked = selected.map((x) => matchOption(job.choice, x, true)).filter(Boolean);
+    if (!picked.some((o) => o.value === 'apply')) return null;
+    console.log(`${ts()} [in] poll multi-vote ${selected.join(' | ')}`);
+    return onMulti(job, picked.filter((o) => o.value !== 'apply'));
+  }
   const opt = matchOption(job.choice, selected[0], true);
   if (!opt) return wa.sendText('Please reply with the option number.');
   console.log(`${ts()} [in] poll vote "${selected[0]}"`);
@@ -830,6 +1004,17 @@ async function handleMessage(data) {
   if (job.state === 'AWAIT_VOICE') return runStep(job, 'voices', { page: 0, after: 'format' }); // job from an older version
 
   // a typed answer to the current poll (number or option name)
+  if (job.choice?.multi) {
+    const nums = text.match(/^\s*\d{1,2}(\s*[, ]\s*\d{1,2})*\s*$/) ? text.match(/\d{1,2}/g).map(Number) : null;
+    if (nums) {
+      const picked = nums.map((n) => job.choice.options[n - 1]).filter((o) => o && o.value !== 'apply');
+      return onMulti(job, picked);
+    }
+    // typed words instead of ticking: treat it as a normal change request
+    job.choice = null;
+    job.state = 'AWAIT_APPROVAL';
+    await saveJob(job);
+  }
   if (job.choice) {
     const opt = matchOption(job.choice, text);
     if (opt) return onChoice(job, opt);
@@ -851,6 +1036,8 @@ async function handleMessage(data) {
     if (APPROVE.test(text)) return runStep(job, 'publish');
     if (lower === 'undo') return undo(job);
     job.choice = null;
+    const tweaks = (await loadLook(job.dir)) ? parseTweaks(text) : null;
+    if (tweaks?.length) return applyTweakKeys(job, tweaks);
     return runStep(job, 'edit', text);
   }
 

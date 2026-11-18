@@ -93,9 +93,9 @@ export function typing(ms = 12000) {
 }
 
 /** Tap-to-choose poll (WhatsApp Web can't show buttons/lists). Returns the poll message id. */
-export async function sendPoll(question, options) {
+export async function sendPoll(question, options, selectableCount = 1) {
   const r = await evo('POST', `/message/sendPoll/${inst()}`, {
-    number: to(), name: question.slice(0, 250), selectableCount: 1, values: options.map((o) => o.slice(0, 100)),
+    number: to(), name: question.slice(0, 250), selectableCount, values: options.map((o) => o.slice(0, 100)),
   });
   return r?.key?.id;
 }
