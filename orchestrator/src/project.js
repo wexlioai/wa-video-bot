@@ -20,6 +20,7 @@ export function defaultSettings() {
     music: { volume: 'low' },
     motion: { energy: 'normal' }, // calm | normal | lively
     progress: { show: true }, // progress line + section names at the top
+    sound: { effects: true, ambience: true }, // effects cued by the animation; quiet room tone when music is off
   };
 }
 
@@ -32,6 +33,7 @@ export function normalizeSettings(s = {}) {
     music: { ...d.music, ...(s.music || {}) },
     motion: { ...d.motion, ...(s.motion || {}) },
     progress: { ...d.progress, ...(s.progress || {}) },
+    sound: { ...d.sound, ...(s.sound || {}) },
   };
   if (!CAPTION_SIZES.includes(out.captions.size)) out.captions.size = 'L';
   if (!CAPTION_POSITIONS.includes(out.captions.position)) out.captions.position = 'bottom';
@@ -71,6 +73,9 @@ export const TWEAKS = {
   'music-quieter': { label: 'Music quieter', apply: (s) => { s.music.volume = step(LEVELS, s.music.volume, -1); } },
   'music-off': { label: 'No music', apply: (s) => { s.music.volume = 'off'; } },
   'music-on': { label: 'Music back on', apply: (s) => { if (s.music.volume === 'off') s.music.volume = 'low'; } },
+  'sfx-off': { label: 'No sound effects', apply: (s) => { s.sound.effects = false; } },
+  'sfx-on': { label: 'Sound effects back on', apply: (s) => { s.sound.effects = true; } },
+  'ambience-off': { label: 'No background room tone', apply: (s) => { s.sound.ambience = false; } },
   'progress-off': { label: 'Hide the progress bar', apply: (s) => { s.progress.show = false; } },
   'progress-on': { label: 'Show the progress bar', apply: (s) => { s.progress.show = true; } },
   'motion-calmer': { label: 'Calmer motion', apply: (s) => { s.motion.energy = s.motion.energy === 'lively' ? 'normal' : 'calm'; } },
@@ -174,6 +179,9 @@ const TWEAK_PATTERNS = [
   ['music-quieter', /\b(music)\b.*\b(quieter|lower|softer|down|less)\b|\b(quieter|lower|softer)\b.*\bmusic\b/i],
   ['music-louder', /\b(music)\b.*\b(louder|higher|up|more)\b|\blouder\b.*\bmusic\b/i],
   ['music-off', /\b(no|remove|without|turn off)\b.*\bmusic\b|\bmusic\b.*\boff\b/i],
+  ['sfx-off', /\b(no|remove|without|turn off)\b.*\b(sound effects?|sfx|effects)\b|\b(sound effects?|sfx)\b.*\boff\b/i],
+  ['sfx-on', /\b(add|turn on|bring back)\b.*\b(sound effects?|sfx)\b/i],
+  ['ambience-off', /\b(no|remove|without|turn off)\b.*\b(ambien\w*|room tone|background (sound|noise))\b/i],
   ['progress-off', /\b(no|hide|remove|without)\b.*\b(progress|top bar|section names)\b/i],
   ['progress-on', /\b(show|add)\b.*\b(progress|top bar|section names)\b/i],
   ['motion-calmer', /\b(calmer|calm|less (motion|movement|animation)|slower animations?)\b/i],

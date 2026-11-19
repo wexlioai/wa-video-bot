@@ -18,7 +18,7 @@ import { styleLibrary, bannedIssues, nicheOf, nicheStyles, rulesText, stylesText
 import { pathToFileURL } from 'node:url';
 import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText, loadLook } from './look.js';
 import { designScenes, storyboard, acceptEditedScenes, reviewScenes } from './designer.js';
-import { pickMusic, whoosh } from './music.js';
+import { pickMusic, whoosh, sfxKit, ambientBed } from './music.js';
 import { speak } from './tts.js';
 
 const toUrl = (p) => p.split(path.sep).join('/');
@@ -319,11 +319,11 @@ async function undo(job) {
 // ---------------------------------------------------------------------------------------
 // Changes after the preview: quick tweaks (no Claude), review suggestions, typed changes.
 
-const TWEAK_MENU = ['subs-bigger', 'subs-smaller', 'subs-top', 'subs-bottom', 'subs-off', 'voice-slower', 'voice-faster', 'music-quieter', 'music-louder', 'music-off', 'motion-livelier'];
+const TWEAK_MENU = ['subs-bigger', 'subs-smaller', 'subs-top', 'subs-bottom', 'subs-off', 'voice-slower', 'voice-faster', 'music-quieter', 'music-louder', 'music-off', 'sfx-off', 'motion-livelier'];
 
 async function askTweaks(job) {
   const s = await loadSettings(job);
-  const now = `Now: subtitles ${s.captions.position === 'off' ? 'off' : `${s.captions.size}, ${s.captions.position}, ${s.captions.style}`}; voice ${s.voice.speed.toFixed(2)}×; music ${s.music.volume}; motion ${s.motion.energy}.\n(Type "next subtitle style", "calmer motion" or "change music" for more.)`;
+  const now = `Now: subtitles ${s.captions.position === 'off' ? 'off' : `${s.captions.size}, ${s.captions.position}, ${s.captions.style}`}; voice ${s.voice.speed.toFixed(2)}×; music ${s.music.volume}; effects ${s.sound.effects ? 'on' : 'off'}; motion ${s.motion.energy}.\n(Type "next subtitle style", "calmer motion" or "change music" for more.)`;
   await wa.sendText(`⚡ ${now}`);
   return ask(job, 'tweaks', 'Quick tweaks', [
     ...TWEAK_MENU.map((k) => ({ label: TWEAKS[k].label, value: k })),
@@ -507,7 +507,9 @@ async function ensureSound(job, settings, p) {
     await saveJob(job);
   }
   const sfx = await whoosh().catch(() => null);
-  return { music: job.music ? path.join(cfg.dataDir, job.music) : null, sfx };
+  const kit = settings.sound?.effects === false ? {} : await sfxKit().catch(() => ({}));
+  const bed = !job.music && settings.sound?.ambience !== false ? await ambientBed(nicheOf(await loadPrefs())).catch(() => null) : null;
+  return { music: job.music ? path.join(cfg.dataDir, job.music) : null, sfx, kit, bed };
 }
 
 /** Screenshot thumbs/t1-3.html at 1280×720 (after the banned-look check). Returns the numbers that worked. */
@@ -786,8 +788,8 @@ const steps = {
         if (engine === 'hyperframes') {
           try {
             const props = await readJson(path.join(job.dir, 'props.json'));
-            const { music, sfx } = await ensureSound(job, settings, p);
-            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct, music, sfx, partMinutes: job.splitParts ? YT_MAX_MIN : 0 });
+            const { music, sfx, kit, bed } = await ensureSound(job, settings, p);
+            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct, music, sfx, kit, bed, partMinutes: job.splitParts ? YT_MAX_MIN : 0 });
           } catch (e) {
             console.log(`${ts()} hyperframes render failed, falling back to remotion: ${e.message}`);
             await wa.sendText(`⚠️ The new motion engine failed on this video, so I'm using the classic one.\n${e.message.slice(0, 300)}`);
@@ -851,9 +853,9 @@ const steps = {
       if (look && (await motionEngine()) === 'hyperframes') {
         await p.update('🎬 Designing and animating the sample…', true);
         const d = await designScenes(job, { plan: sub, props, look, formats: job.formats });
-        const { music, sfx } = await ensureSound(job, settings, p);
+        const { music, sfx, kit, bed } = await ensureSound(job, settings, p);
         await p.update('🎬 Rendering the sample…', true);
-        out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx, draft: true });
+        out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx, kit, bed, draft: true });
       } else {
         await p.update('🎬 Rendering the sample…', true);
         out = await renderVideo(job, job.formats[0], null, { name: 'sample' });

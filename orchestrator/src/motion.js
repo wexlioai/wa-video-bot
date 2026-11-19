@@ -12,6 +12,7 @@ import { buildAss } from './captions.js';
 import { finishVideo, splitAt, highlights } from './finish.js';
 import { basicDesign } from './scenes-basic.js';
 import { progressLayer } from './overlay.js';
+import { sfxVolume } from './music.js';
 import { run, exists, audioDuration } from './util.js';
 
 export const MOTION_DIR = path.join(ROOT, 'motion');
@@ -304,7 +305,7 @@ async function hfRender(dir, out, { draft, fps, onPct }) {
  * ONE encode (progress layer + subtitles + mixed audio with two-pass loudness).
  * draft: quick low-quality render (demos). Returns { full, preview, hd, qc }.
  */
-export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, events = [], name = format, draft = false, partMinutes = 0 }) {
+export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, kit = {}, bed = null, events = [], name = format, draft = false, partMinutes = 0 }) {
   const fps = draft ? 24 : (props.fps || 30);
   const work = path.join(job.dir, 'render', `${name}`);
   const clipDir = path.join(job.dir, 'clips', format);
@@ -325,6 +326,7 @@ export async function renderProject(job, format, { props, settings, designs = {}
   if (props.language === 'ur') fontQueries.add('Noto Nastaliq Urdu:wght@400;700');
 
   const clips = [];
+  const cueList = [];
   let doneSec = 0;
   for (const [ci, ch] of chunks.entries()) {
     const start = ch[0].offset;
@@ -336,8 +338,12 @@ export async function renderProject(job, format, { props, settings, designs = {}
     const audioKey = ch.map((s) => (s.audio ? path.basename(s.audio) : 'none')).join(',');
     const clip = path.join(clipDir, `chunk-${sha(`${html}|${audioKey}|${fps}|${draft}`)}.mp4`);
     const chSec = ch.reduce((a, s) => a + s.duration, 0);
+    const sfxFile = `${clip}.sfx.json`;
     if (!(await exists(clip))) {
       await fs.writeFile(path.join(dir, 'index.html'), html);
+      // sound cues the scene code asked for with sfx(name, t) (read once, cached next to the clip)
+      const cues = await readCues(path.join(dir, 'index.html')).catch((e) => { console.log(`sound cues skipped: ${e.message.slice(0, 120)}`); return []; });
+      await fs.writeFile(sfxFile, JSON.stringify(cues));
       await fs.writeFile(path.join(dir, 'gsap.min.js'), gsap);
       await fs.copyFile(path.join(MOTION_DIR, 'motion-lib.js'), path.join(dir, 'motion-lib.js')).catch(() => {});
       for (const s of ch) if (s.audio) await fs.copyFile(path.join(job.dir, s.audio), path.join(dir, `voice-${s.id}${path.extname(s.audio)}`));
@@ -357,6 +363,7 @@ export async function renderProject(job, format, { props, settings, designs = {}
       await fs.rm(dir, { recursive: true, force: true });
     }
     clips.push(clip);
+    for (const c of (await readJsonSafe(sfxFile)) || []) cueList.push({ ...c, t: c.t + start });
     doneSec += chSec;
     onPercent?.(Math.round((doneSec / (totalFrames / (props.fps || 30))) * 94));
   }
@@ -374,14 +381,22 @@ export async function renderProject(job, format, { props, settings, designs = {}
     await fs.writeFile(assFile, ass);
     fontsDir = await ensureCaptionFonts();
   }
-  const cutSounds = sfx ? timed.slice(1).map((s) => ({ file: sfx, t: Math.max(0, s.offset - 0.35), vol: 0.3 })) : [];
+  // transitions: a page turn when a new section starts, a soft swoosh otherwise (never two in a row the same at fast cuts)
+  const cutSounds = [];
+  timed.slice(1).forEach((s, i) => {
+    const newSection = s.section && s.section !== timed[i].section;
+    const file = newSection ? (kit.page || kit.swoosh || sfx) : (kit.swoosh || sfx);
+    if (file) cutSounds.push({ file, t: Math.max(0, s.offset - 0.35), vol: newSection ? 0.4 : 0.28 });
+  });
+  const cueSounds = settings.sound?.effects === false ? [] : thinCues(cueList).filter((c) => kit[c.name]).map((c) => ({ file: kit[c.name], t: c.t, vol: Math.min(1, c.vol ?? 1) * sfxVolume(c.name) }));
+  if (cueSounds.length) console.log(`sound effects: ${cueSounds.length} cues`);
   // over YouTube's limit: cut points at scene starts, each part at most partMinutes long
   const cuts = [];
   if (partMinutes > 0) {
     let last = 0;
     for (const s of timed) if (s.offset - last > partMinutes * 60) { const prev = timed.filter((x) => x.offset < s.offset).pop(); cuts.push(prev.offset); last = prev.offset; }
   }
-  await finishVideo({ chunks: clips, out: full, work, progress, assFile, fontsDir, music, volume: settings.music?.volume || 'low', events: [...cutSounds, ...events], keyframes: cuts });
+  await finishVideo({ chunks: clips, out: full, work, progress, assFile, fontsDir, music, volume: settings.music?.volume || 'low', events: [...cutSounds, ...cueSounds, ...events], keyframes: cuts, bed });
   onPercent?.(99);
   const qc = await checkVideo(full);
   if (!draft) await recordRenderSpeed(totalFrames / (props.fps || 30), (Date.now() - t0) / 1000);
@@ -424,4 +439,31 @@ export async function checkVideo(file) {
   const ends = [...r.stderr.matchAll(/freeze_end: ([\d.]+)/g)].map((m) => +m[1]);
   starts.forEach((s, i) => out.push(`no movement ${s.toFixed(1)}-${ends[i] != null ? ends[i].toFixed(1) : 'end'} s`));
   return out.slice(0, 6);
+}
+
+/** Load a composition once and read the sound cues its scenes registered with sfx(name, t). */
+async function readCues(htmlFile) {
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.goto(`file://${htmlFile.replace(/\\/g, '/')}`, { waitUntil: 'load', timeout: 60_000 });
+    await page.waitForFunction(() => window.__timelines && Object.keys(window.__timelines).length, null, { timeout: 30_000 }).catch(() => {});
+    const cues = await page.evaluate(() => (window.__sfx || []).filter((c) => c && typeof c.name === 'string' && Number.isFinite(c.t)));
+    return cues.map((c) => ({ name: c.name, t: +c.t.toFixed(3), vol: Number.isFinite(c.vol) ? c.vol : 1 }));
+  } finally {
+    await browser.close();
+  }
+}
+
+/** Keep effects sparse: at least 0.6 s apart, at most 3 per 10 seconds. */
+function thinCues(list) {
+  const out = [];
+  for (const c of [...list].sort((a, b) => a.t - b.t)) {
+    const last = out[out.length - 1];
+    if (last && c.t - last.t < 0.6) continue;
+    if (out.filter((x) => c.t - x.t < 10).length >= 3) continue;
+    out.push(c);
+  }
+  return out;
 }

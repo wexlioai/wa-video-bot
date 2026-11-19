@@ -159,3 +159,54 @@ export async function mixSound(input, output, { music, volume = 'low', cuts = []
   args.push('-filter_complex', parts.join(';'), '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-movflags', '+faststart', output);
   await run('ffmpeg', args, { timeoutMs: 30 * 60_000 });
 }
+
+// ------------------------------------------------------------------ sound effects kit + ambient beds
+// Generated once with OpenSpeaker (about 60 credits per second) and reused forever.
+const KIT = {
+  stamp: { text: 'a single firm rubber stamp pressed onto paper on a wooden desk, short thud, dry, no echo', sec: 1 },
+  seal: { text: 'soft wax seal pressed onto parchment, gentle muted press, intimate, dry', sec: 1 },
+  paper: { text: 'a sheet of paper sliding softly across a wooden desk, gentle, close', sec: 1 },
+  page: { text: 'a single soft page turn of an old book, close and quiet', sec: 1 },
+  swoosh: { text: 'very soft short airy whoosh transition, gentle, clean, no reverb tail', sec: 1 },
+  pop: { text: 'a tiny soft wooden click, subtle, close, dry', sec: 0.5 },
+  ink: { text: 'a reed pen writing briefly on paper, soft scratch, close', sec: 1 },
+  count: { text: 'soft quick mechanical ticking for one second, subtle, dry', sec: 1 },
+};
+const VOL = { stamp: 0.55, seal: 0.45, paper: 0.35, page: 0.35, swoosh: 0.28, pop: 0.3, ink: 0.3, count: 0.22 };
+const BEDS = {
+  islamic: { text: 'quiet ambience of an old stone library, faint distant wind outside, very soft room tone, no music, no voices, no birds, seamless loop', sec: 22 },
+};
+
+async function genSfx(name, spec, loop = false) {
+  const f = path.join(SFX(), `${name}.mp3`);
+  if (await exists(f)) return f;
+  if (!canGenerate()) return null;
+  try {
+    await fs.mkdir(SFX(), { recursive: true });
+    const task = await osTask(`${OS_API}/v1/task/sound-effect`, { text: spec.text, duration_seconds: spec.sec, prompt_influence: 0.55, loop });
+    const u = task.metadata?.output_uri || task.metadata?.audio_url;
+    if (!u) return null;
+    await download(u, f);
+    return f;
+  } catch (e) {
+    console.log(`sound effect ${name} not generated: ${e.message}`);
+    return null;
+  }
+}
+
+/** name → file for the effect sounds that exist (generating missing ones once). */
+export async function sfxKit() {
+  const out = {};
+  for (const [name, spec] of Object.entries(KIT)) {
+    const f = await genSfx(name, spec);
+    if (f) out[name] = f;
+  }
+  return out;
+}
+export const sfxVolume = (name) => VOL[name] ?? 0.3;
+
+/** A quiet ambient bed for the niche (used when music is off). */
+export async function ambientBed(niche) {
+  const spec = BEDS[niche];
+  return spec ? genSfx(`bed-${niche}`, spec, true) : null;
+}

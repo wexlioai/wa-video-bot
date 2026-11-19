@@ -33,7 +33,7 @@ export async function joinChunks(chunks, out, work) {
 }
 
 /** Voice (from the joined video) + ducked music + sound effects → WAV. events: [{file, t, vol}] */
-async function mixAudio(joined, outWav, { music, volume, events = [] }) {
+async function mixAudio(joined, outWav, { music, volume, events = [], bed = null }) {
   const D = await audioDuration(joined);
   const args = ['-y', '-i', joined];
   const parts = [];
@@ -44,6 +44,13 @@ async function mixAudio(joined, outWav, { music, volume, events = [] }) {
     parts.push('[0:a]asplit=2[voice][key]');
     parts.push(`[${n}:a]atrim=0:${D.toFixed(2)},asetpts=PTS-STARTPTS,volume=${LEVEL[volume] || LEVEL.low},afade=t=in:d=1.5,afade=t=out:st=${Math.max(0, D - 3).toFixed(2)}:d=3[m]`);
     parts.push('[m][key]sidechaincompress=threshold=0.02:ratio=6:attack=30:release=450[duck]');
+    duck = '[duck]';
+    n++;
+  } else if (bed) {
+    // no music: a very quiet room-tone bed so silence between sentences never sounds dead
+    args.push('-stream_loop', '-1', '-i', bed);
+    parts.push('[0:a]anull[voice]');
+    parts.push(`[${n}:a]atrim=0:${D.toFixed(2)},asetpts=PTS-STARTPTS,volume=0.05,afade=t=in:d=2,afade=t=out:st=${Math.max(0, D - 3).toFixed(2)}:d=3[duck]`);
     duck = '[duck]';
     n++;
   } else parts.push('[0:a]anull[voice]');
@@ -77,12 +84,12 @@ async function measureLoudness(wav) {
  * chunks → out. progress: result of progressLayer() or null. assFile: subtitles or null.
  * fontsDir: folder with the subtitle fonts. events: sound effects [{file, t, vol}].
  */
-export async function finishVideo({ chunks, out, work, progress, assFile, fontsDir, music, volume, events, keyframes = [] }) {
+export async function finishVideo({ chunks, out, work, progress, assFile, fontsDir, music, volume, events, keyframes = [], bed = null }) {
   await fs.mkdir(work, { recursive: true });
   const joined = path.join(work, 'joined.mp4');
   await joinChunks(chunks, joined, work);
   const wav = path.join(work, 'mix.wav');
-  await mixAudio(joined, wav, { music, volume, events });
+  await mixAudio(joined, wav, { music, volume, events, bed });
   const L = await measureLoudness(wav);
   const loud = L
     ? `loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=${L.input_i}:measured_TP=${L.input_tp}:measured_LRA=${L.input_lra}:measured_thresh=${L.input_thresh}:offset=${L.target_offset}:linear=true`

@@ -35,6 +35,14 @@ colour, fonts, the voice track and the captions itself. **Do not draw captions o
 | `$('.x')`, `$$('.x')` | querySelector / querySelectorAll inside the scene. |
 | `RTL`, `LANG` | `true` / `'ur'` for Urdu (right-to-left). |
 
+## Sound cues (`sfx`)
+`sfx('stamp', when('ruled'))` plays a sound at that time (seconds into the scene). Call it at the top level of the
+script, next to the tween it belongs to (never inside a callback). Names: `stamp` (seal/verdict lands), `seal`
+(wax seal), `paper` (card or document slides in), `page` (page turn), `swoosh` (fast move), `pop` (small item
+appears), `ink` (writing/drawing starts), `count` (number counting up). Optional volume: `sfx('pop', t, 0.6)`.
+Use 1-2 per scene, only on the moment that matters (a ruling stamped, a page revealed); the bot keeps them
+sparse (at least 0.6 s apart, at most 3 in 10 s) and adds the scene transitions itself.
+
 ## Shared motion helpers (`M`)
 Every scene can use `M` (from motion-lib.js); prefer them to hand-written tweens for common moves:
 `M.rise(tl, '.ttl .w', at)` masked rise · `M.slide(tl, el, at, {from:'left'})` · `M.pop(tl, el, at)` ·
