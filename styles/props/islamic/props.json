@@ -1,0 +1,318 @@
+{
+  "_note": "Props for the Islamic scholarship styles. In a scene write <prop name=\"NAME\" class=\"your-class\" style=\"position:absolute;left:..;top:..;width:..px\" text=\"...\"></prop>; the bot replaces it with the SVG (params like text, t1..t5 fill the {{...}} slots). Colours follow the palette variables. Animate the listed parts with GSAP using your class: e.g. tl.from(\".sc .my-map .city-medina\", ...).",
+  "props": {
+    "arabia-map": {
+      "file": "arabia-map.svg",
+      "description": "Schematic map of the Arabian Peninsula and neighbours (Red Sea, Gulf, Hijaz region) with cities: mecca, medina, taif, badr, khaybar, hudaybiyyah, tabuk, jerusalem, damascus, kufa, basra, baghdad, sanaa. Coordinates are real (equirectangular). To zoom on a city, scale/translate the prop; to show a route, draw your own path between city positions (see cityPositions).",
+      "viewBox": "0 0 1000 766",
+      "params": {},
+      "parts": [
+        ".sea",
+        ".land",
+        ".relief",
+        ".region-hijaz",
+        ".city",
+        ".city-<id> (e.g. .city-medina)",
+        ".city-dot",
+        ".city-ring (opacity 0: animate to pulse once)",
+        ".city-label"
+      ],
+      "cityPositions": {
+        "mecca": [
+          328,
+          419
+        ],
+        "medina": [
+          320,
+          317
+        ],
+        "taif": [
+          347,
+          424
+        ],
+        "badr": [
+          293,
+          340
+        ],
+        "khaybar": [
+          310,
+          276
+        ],
+        "hudaybiyyah": [
+          318,
+          413
+        ],
+        "jerusalem": [
+          174,
+          74
+        ],
+        "damascus": [
+          210,
+          16
+        ],
+        "kufa": [
+          480,
+          66
+        ],
+        "basra": [
+          593,
+          117
+        ],
+        "baghdad": [
+          480,
+          23
+        ],
+        "sanaa": [
+          473,
+          620
+        ],
+        "tabuk": [
+          219,
+          187
+        ]
+      }
+    },
+    "star-rosette": {
+      "file": "star-rosette.svg",
+      "description": "An 8-point star rosette (two rotated squares in a star) with a core circle and an optional short text (number/term). For medallions, section markers, bullets.",
+      "viewBox": "0 0 200 200",
+      "params": {
+        "text": ""
+      },
+      "parts": [
+        ".star-outer",
+        ".star-sq1",
+        ".star-sq2",
+        ".star-core",
+        ".star-text"
+      ]
+    },
+    "girih-band": {
+      "file": "girih-band.svg",
+      "description": "A horizontal band of 8-point star (girih) tiles between two gold rules. Stretch it (preserveAspectRatio is meet: set width; height follows 10:1). Give each instance a unique id param.",
+      "viewBox": "0 0 1200 120",
+      "params": {
+        "id": "a"
+      },
+      "parts": [
+        ".girih-fill",
+        ".girih-rule"
+      ]
+    },
+    "girih-pattern": {
+      "file": "girih-pattern.svg",
+      "description": "Full-canvas girih (8-point star) pattern for backgrounds. Use at 15-40 % opacity. Unique id param per instance.",
+      "viewBox": "0 0 1920 1080",
+      "params": {
+        "id": "a"
+      },
+      "parts": [
+        ".pattern-fill"
+      ]
+    },
+    "wax-seal": {
+      "file": "wax-seal.svg",
+      "description": "A red wax seal with a cream ring, a faint star and a short text (e.g. \"1 AH\", \"622\"). Stamp it in: scale 1.4 -> 1 with a quick settle.",
+      "viewBox": "0 0 220 220",
+      "params": {
+        "text": ""
+      },
+      "parts": [
+        ".seal-body",
+        ".seal-ring",
+        ".seal-star",
+        ".seal-text"
+      ]
+    },
+    "stamp": {
+      "file": "stamp.svg",
+      "description": "A red circular rubber stamp, default text HELD. Stamp in: scale 1.6 -> 1, rotate -20 -> -12 deg, opacity 0 -> 1 in 0.25 s.",
+      "viewBox": "0 0 260 260",
+      "params": {
+        "text": "HELD",
+        "sub": ""
+      },
+      "parts": [
+        ".stamp",
+        ".stamp-text",
+        ".stamp-sub"
+      ]
+    },
+    "document": {
+      "file": "document.svg",
+      "description": "A portrait judgment document: cream paper, gold double border, faint ruled lines in the lower half (put your HTML text above it, positioned over the prop). Give it a soft shadow with CSS filter: drop-shadow.",
+      "viewBox": "0 0 900 1200",
+      "params": {},
+      "parts": [
+        ".doc-paper",
+        ".doc-border",
+        ".doc-lines line"
+      ]
+    },
+    "document-wide": {
+      "file": "document-wide.svg",
+      "description": "A landscape judgment document (14:9) for 16:9 videos: cream paper, gold double border, a few faint ruled lines near the bottom. Place HTML text over it.",
+      "viewBox": "0 0 1400 900",
+      "params": {},
+      "parts": [
+        ".doc-paper",
+        ".doc-border",
+        ".doc-lines line"
+      ]
+    },
+    "scroll": {
+      "file": "scroll.svg",
+      "description": "A horizontal parchment scroll between two wooden rods. Unroll it by animating .scroll-paper scaleX from the centre and moving the rods apart.",
+      "viewBox": "0 0 800 500",
+      "params": {},
+      "parts": [
+        ".scroll-paper",
+        ".scroll-rod-left",
+        ".scroll-rod-right"
+      ]
+    },
+    "book-shelf": {
+      "file": "book-shelf.svg",
+      "description": "Five leather book spines on a shelf with vertical titles t1..t5 (short: \"Ibn Hisham\", \"al-Tabari\"...). Slide books up one by one as each source is named.",
+      "viewBox": "0 0 576 520",
+      "params": {
+        "t1": "",
+        "t2": "",
+        "t3": "",
+        "t4": "",
+        "t5": ""
+      },
+      "parts": [
+        ".shelf",
+        ".book",
+        ".book-1 \u2026 .book-5"
+      ]
+    },
+    "scales": {
+      "file": "scales.svg",
+      "description": "Scales of justice. Tilt .scales-beam (transformOrigin 200px 90px) a few degrees and counter-rotate the pans to show weighing; level it for the ruling.",
+      "viewBox": "0 0 400 420",
+      "params": {},
+      "parts": [
+        ".scales-beam",
+        ".pan-left",
+        ".pan-right",
+        ".scales-pillar",
+        ".scales-base"
+      ]
+    },
+    "reed-pen": {
+      "file": "reed-pen.svg",
+      "description": "A reed pen (qalam) resting in an inkwell. Lift the pen (.reed-pen) and draw an ink line elsewhere to \"write\".",
+      "viewBox": "0 0 360 380",
+      "params": {},
+      "parts": [
+        ".inkwell",
+        ".reed-pen"
+      ]
+    },
+    "arch": {
+      "file": "arch.svg",
+      "description": "A pointed arch frame (fill + gold outline). Draw the outline with stroke-dashoffset (length about 1900). Put text or another prop inside; rise the camera through it as a transition.",
+      "viewBox": "0 0 600 920",
+      "params": {},
+      "parts": [
+        ".arch-fill",
+        ".arch-outline",
+        ".arch-inner"
+      ]
+    },
+    "dome-skyline": {
+      "file": "dome-skyline.svg",
+      "description": "A silhouette skyline of generic domes and minarets (not a specific mosque) on a base line. Use as a horizon, at low opacity, or with a sunrise gradient behind.",
+      "viewBox": "0 0 1200 420",
+      "params": {},
+      "parts": [
+        ".skyline"
+      ]
+    },
+    "lattice": {
+      "file": "lattice.svg",
+      "description": "A mashrabiya lattice window with star-shaped openings. Animate a light gradient behind it, or its light patch on a wall.",
+      "viewBox": "0 0 420 520",
+      "params": {},
+      "parts": [
+        ".lattice-frame",
+        ".lattice-holes"
+      ]
+    },
+    "banner": {
+      "file": "banner.svg",
+      "description": "A standard banner on a pole for a community or tribe, with a short text (max ~8 letters, e.g. \"AWS\"). Recolour with CSS: .prop-banner .banner-cloth { fill: \u2026 }. Raise it (scaleY from the bottom of the pole).",
+      "viewBox": "0 0 200 300",
+      "params": {
+        "text": ""
+      },
+      "parts": [
+        ".banner-cloth",
+        ".banner-text"
+      ]
+    },
+    "palm": {
+      "file": "palm.svg",
+      "description": "A date palm. Sway .palm-fronds a few degrees (transformOrigin 150px 90px).",
+      "viewBox": "0 0 300 400",
+      "params": {},
+      "parts": [
+        ".palm-trunk",
+        ".palm-fronds"
+      ]
+    },
+    "tent": {
+      "file": "tent.svg",
+      "description": "A desert tent (camps, journeys, communities).",
+      "viewBox": "0 0 320 270",
+      "params": {},
+      "parts": [
+        ".tent"
+      ]
+    },
+    "city-wall": {
+      "file": "city-wall.svg",
+      "description": "A crenellated city wall with an arched gate (cities, defence, protection). Build it up course by course or slide it up.",
+      "viewBox": "0 0 1000 300",
+      "params": {},
+      "parts": [
+        ".wall",
+        ".gate"
+      ]
+    },
+    "timeline": {
+      "file": "timeline.svg",
+      "description": "A horizontal timeline ruler (ticks every 50 units, long ticks every 200). Put your own AH/CE labels as HTML above/below; slide .tl-marker (translate x) to the date.",
+      "viewBox": "0 0 1200 90",
+      "params": {},
+      "parts": [
+        ".tl-line",
+        ".tl-ticks",
+        ".tl-marker"
+      ]
+    },
+    "lantern": {
+      "file": "lantern.svg",
+      "description": "A hanging lantern; gently brighten .lantern-glow (opacity) for atmosphere (calm, never flickering fast).",
+      "viewBox": "0 0 200 280",
+      "params": {},
+      "parts": [
+        ".lantern-cap",
+        ".lantern-body",
+        ".lantern-glow"
+      ]
+    },
+    "corner-ornament": {
+      "file": "corner-ornament.svg",
+      "description": "A gold manuscript corner ornament (two rules and a star). Use four, flipped with CSS transforms (scaleX(-1) / scaleY(-1)), to frame a page.",
+      "viewBox": "0 0 210 210",
+      "params": {},
+      "parts": [
+        ".corner",
+        ".corner-star"
+      ]
+    }
+  }
+}

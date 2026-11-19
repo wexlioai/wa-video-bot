@@ -9,6 +9,7 @@ import { ROOT, cfg } from './config.js';
 import { sceneHtml } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
 import { mixSound } from './music.js';
+import { addProgressOverlay } from './overlay.js';
 import { run, exists, audioDuration } from './util.js';
 
 export const MOTION_DIR = path.join(ROOT, 'motion');
@@ -319,8 +320,17 @@ export async function renderProject(job, format, { props, settings, designs = {}
   const cuts = [];
   let acc = 0;
   for (const s of props.scenes.slice(0, -1)) { acc += s.durationInFrames / fps; cuts.push(acc); }
-  await mixSound(joined, full, { music, volume: settings.music?.volume || 'low', cuts, sfx });
+  // where-am-I overlay (progress line + sections); never fatal
+  let base = joined;
+  if (settings.progress?.show !== false) {
+    const withBar = path.join(work, 'joined-progress.mp4');
+    const ok = await addProgressOverlay(joined, withBar, { scenes: props.scenes, fps, format, theme: props.theme, lang: props.language, workDir: path.join(work, 'overlay') })
+      .catch((e) => { console.log(`progress overlay skipped: ${e.message.slice(0, 200)}`); return false; });
+    if (ok) base = withBar;
+  }
+  await mixSound(base, full, { music, volume: settings.music?.volume || 'low', cuts, sfx });
   await fs.rm(joined, { force: true });
+  await fs.rm(path.join(work, 'joined-progress.mp4'), { force: true });
   onPercent?.(99);
   const qc = await checkVideo(full);
 

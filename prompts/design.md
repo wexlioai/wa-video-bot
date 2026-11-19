@@ -6,6 +6,7 @@ Each scene must feel designed for its exact words: a visual idea that explains o
 not a slide with the narration's text on it.
 
 Read these files first:
+- `_ref/retention.md`: how to keep viewers watching. Every scene must follow it.
 - `_ref/motion-api.md`: the scene file format, the variables you can use and the rules. Follow it exactly.
 - `_ref/{{STYLE_FILE}}`: the style you must follow ({{STYLE_NAME}}).
 - `look.json`: this video's look: palette, fonts, motion personality and creative brief (metaphors, tone, arc).

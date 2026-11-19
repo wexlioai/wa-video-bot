@@ -17,9 +17,34 @@ export function spokenText(text, language) {
 
 export async function speak(rawText, voiceId, outFile, language, { speed = 1 } = {}) {
   const text = spokenText(rawText, language);
-  if (cfg.tts.provider === 'elevenlabs') return speakEleven(text, voiceId, outFile, language, speed);
-  if (cfg.tts.provider === 'openspeaker') return speakOpenSpeaker(text, voiceId, outFile, speed);
-  return speakEdge(text, voiceId, outFile, speed);
+  let r;
+  if (cfg.tts.provider === 'elevenlabs') r = await speakEleven(text, voiceId, outFile, language, speed);
+  else if (cfg.tts.provider === 'openspeaker') r = await speakOpenSpeaker(text, voiceId, outFile, speed);
+  else r = await speakEdge(text, voiceId, outFile, speed);
+  if (text !== String(rawText).trim()) r.words = glyphsInCaptions(r.words || []);
+  return r;
+}
+
+// The spoken honorific phrases go back to their glyphs in the subtitles.
+const PHRASES = [
+  { words: ['peace', 'be', 'upon', 'him'], glyph: '\uFDFA' },
+  { words: ['صلی', 'اللہ', 'علیہ', 'وسلم'], glyph: '\uFDFA' },
+  { words: ['may', 'allah', 'be', 'pleased', 'with', 'him'], glyph: '(RA)' },
+  { words: ['رضی', 'اللہ', 'عنہ'], glyph: '(RA)' },
+];
+const bare = (t) => String(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+export function glyphsInCaptions(words) {
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    const hit = PHRASES.find((p) => p.words.every((w, k) => bare(words[i + k]?.text) === bare(w)));
+    if (hit) {
+      const last = words[i + hit.words.length - 1];
+      if (out.length) out[out.length - 1] = { ...out[out.length - 1], text: out[out.length - 1].text.replace(/,$/, '') };
+      out.push({ text: hit.glyph + (/[.!?]$/.test(last.text) ? last.text.slice(-1) : ''), start: words[i].start, end: last.end });
+      i += hit.words.length - 1;
+    } else out.push(words[i]);
+  }
+  return out;
 }
 
 function edgeRate(speed) {

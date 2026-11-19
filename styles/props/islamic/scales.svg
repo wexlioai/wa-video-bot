@@ -1,0 +1,6 @@
+<svg class="prop prop-scales" viewBox="0 0 400 420" xmlns="http://www.w3.org/2000/svg"><g class="scales" stroke="var(--text)" stroke-width="6" fill="none" stroke-linecap="round">
+<line class="scales-pillar" x1="200" y1="70" x2="200" y2="380"/><path class="scales-base" d="M130 390 h140" stroke-width="12"/>
+<g class="scales-beam"><line x1="60" y1="90" x2="340" y2="90"/>
+<g class="pan-left"><line x1="60" y1="90" x2="30" y2="210" stroke-width="3"/><line x1="60" y1="90" x2="90" y2="210" stroke-width="3"/><path d="M20 210 Q60 250 100 210 Z" fill="var(--accent)" stroke="var(--accent)"/></g>
+<g class="pan-right"><line x1="340" y1="90" x2="310" y2="210" stroke-width="3"/><line x1="340" y1="90" x2="370" y2="210" stroke-width="3"/><path d="M300 210 Q340 250 380 210 Z" fill="var(--accent)" stroke="var(--accent)"/></g></g>
+<circle cx="200" cy="70" r="12" fill="var(--accent)" stroke="none"/></g></svg>

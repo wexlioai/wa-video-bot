@@ -14,7 +14,7 @@ export async function askClaude(jobDir, promptName, vars = {}, { maxTurns = 25, 
   let prompt = await fs.readFile(path.join(cfg.promptsDir, `${promptName}.md`), 'utf8');
   vars = { SCHEMA: await fs.readFile(path.join(cfg.promptsDir, 'schema.md'), 'utf8'), ...vars };
   for (const [k, v] of Object.entries(vars)) prompt = prompt.replaceAll(`{{${k}}}`, String(v));
-  prompt = prompt.replace(/\{\{RULES\}\}/g, ''); // no niche rules for this call
+  prompt = prompt.replace(/\{\{[A-Z_]+\}\}/g, ''); // placeholders not used by this call
 
   const args = [
     '-p', // prompt is piped on stdin

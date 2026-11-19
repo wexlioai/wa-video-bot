@@ -1,0 +1,50 @@
+<style>
+  .sc .desk { position:absolute; inset:0; background:var(--bg2); }
+  .sc .cam { position:absolute; inset:0; transform-origin:1037px 453px; }
+  .sc .map { position:absolute; left:640px; top:60px; width:1240px; }
+  .sc .panel { position:absolute; left:0; top:0; bottom:0; width:720px; background:linear-gradient(90deg, var(--bg) 82%, rgba(0,0,0,0));
+               box-shadow:30px 0 60px rgba(0,0,0,.10); }
+  .sc .kick { position:absolute; left:110px; top:190px; font:600 26px Inter, sans-serif; letter-spacing:10px; color:var(--accent); }
+  .sc .head { position:absolute; left:110px; top:240px; width:520px; font:700 80px/1.06 var(--fh); color:var(--text); }
+  .sc .card { position:absolute; left:110px; top:520px; width:480px; padding:24px 28px; background:#FBF6EA; border-left:10px solid var(--primary);
+              font:500 32px/1.35 Inter, sans-serif; color:var(--text); box-shadow:0 18px 40px rgba(0,0,0,.12); }
+  .sc .card b { color:#A8322B; }
+  .sc .grp { position:absolute; width:180px; text-align:center; }
+  .sc .grp .ban { width:70px; display:block; margin:0 auto; transform-origin:50% 100%; }
+  .sc .grp span { display:inline-block; margin-top:6px; padding:6px 14px; border-radius:999px; background:#FBF6EA; font:700 22px Inter, sans-serif; letter-spacing:2px; color:var(--text); box-shadow:0 6px 16px rgba(0,0,0,.12); }
+  .portrait .sc .panel { width:auto; left:0; right:0; top:auto; height:760px; background:linear-gradient(0deg, var(--bg) 85%, rgba(0,0,0,0)); }
+  .portrait .sc .kick { top:1180px; left:90px; } .portrait .sc .head { top:1230px; left:90px; width:900px; font-size:72px; } .portrait .sc .card { display:none; }
+</style>
+<div class="sc">
+  <div class="desk"></div>
+  <div class="cam"><prop name="arabia-map" class="map"></prop></div>
+  <!-- labels live outside the camera so they stay sharp and readable at the zoomed-in size -->
+  <div class="grp g1" style="left:1520px;top:300px"><prop name="banner" class="ban" style="width:70px"></prop><span>AWS</span></div>
+  <div class="grp g2" style="left:1730px;top:300px"><prop name="banner" class="ban" style="width:70px"></prop><span>KHAZRAJ</span></div>
+  <div class="grp g3" style="left:1520px;top:600px"><prop name="banner" class="ban" style="width:70px"></prop><span>3 JEWISH TRIBES</span></div>
+  <div class="grp g4" style="left:1730px;top:600px"><prop name="banner" class="ban" style="width:70px"></prop><span>~75 EMIGRANTS</span></div>
+  <div class="panel"></div>
+  <div class="kick">THE FACTS</div>
+  <div class="head">One city, many loyalties</div>
+  <div class="card">Rival tribes, three legal systems and <b>no written law</b> to hold them together.</div>
+</div>
+<script>
+  // Frame 0 is already complete (map + headline); the camera starts flying to Medina immediately.
+  tl.fromTo('.sc .cam', { scale: 1, x: 0, y: 0 }, { scale: 2.3, x: 243, y: 107, duration: 2.4 * E, ease: 'power2.inOut' }, 0);
+  tl.from('.sc .kick', { x: -40, opacity: 0, duration: 0.5 * E, ease: 'power3.out' }, 0.05);
+  tl.from('.sc .head', { y: 40, opacity: 0, duration: 0.7 * E, ease: 'power3.out' }, 0.15);
+  // Medina answers with one pulse when it is named
+  const tMed = when('medina');
+  tl.fromTo('.sc .map .city-medina .city-ring', { opacity: 0.9, scale: 0.4, transformOrigin: '50% 50%' }, { opacity: 0, scale: 2.4, duration: 1.2, ease: 'power2.out' }, tMed);
+  tl.to('.sc .map .label-medina', { fill: T.primary, duration: 0.3 }, tMed);
+  // each community rises exactly when it is mentioned
+  [['.g1', 'aws'], ['.g2', 'khazraj'], ['.g3', 'jewish'], ['.g4', 'emigrants']].forEach(([g, w]) => {
+    const at = when(w, 1) - 0.15;
+    tl.from(`.sc ${g} .ban`, { scaleY: 0, duration: 0.6 * E, ease: 'power3.out' }, at);
+    tl.from(`.sc ${g} span`, { y: 14, opacity: 0, duration: 0.4 * E, ease: 'power2.out' }, at + 0.25);
+  });
+  // the takeaway lands with the words that matter
+  tl.from('.sc .card', { x: -60, opacity: 0, duration: 0.7 * E, ease: 'power3.out' }, when('legal', 2) - 0.2);
+  // never static: a slow drift until the end of the scene
+  tl.to('.sc .cam', { x: '-=30', y: '-=12', duration: Math.max(1, D - 2.6), ease: 'sine.inOut' }, 2.5);
+</script>

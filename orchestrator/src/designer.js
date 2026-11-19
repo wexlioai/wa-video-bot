@@ -11,6 +11,7 @@ import { readJson, writeJson, exists } from './util.js';
 import { prepareRefs, bannedIssues, styleLibrary, rulesText } from './look.js';
 import { sceneHtml, esc } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
+import { expandProps } from './props.js';
 
 const BATCH = 4; // scenes per Claude call
 const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12);
@@ -38,7 +39,7 @@ function hint(v = {}) {
 const BAD_JS = /(Math\.random|Date\.now|new Date|setTimeout|setInterval|requestAnimationFrame|fetch\s*\(|XMLHttpRequest|repeat\s*:\s*-1|import\s*\()/;
 
 /** Parse + check one scene file. Returns { design } or { problems: [...] }. */
-export function parseScene(text, look) {
+export function parseScene(text, look, sceneId = 's') {
   const problems = [];
   const css = (text.match(/<style[^>]*>([\s\S]*?)<\/style>/i) || [])[1] || '';
   const js = (text.match(/<script[^>]*>([\s\S]*?)<\/script>/i) || [])[1] || '';
@@ -49,10 +50,12 @@ export function parseScene(text, look) {
   const bad = js.match(BAD_JS);
   if (bad) problems.push(`not allowed in the script: ${bad[0]}`);
   problems.push(...bannedIssues(text, { html: true }).filter((x) => x !== 'frame contains JavaScript').map((x) => x.replace('frame', 'scene')));
+  const ex = expandProps(body, look.niche || 'general', sceneId);
+  if (ex.unknown.length) problems.push(`unknown prop(s): ${ex.unknown.join(', ')} (use names from _ref/props-${look.niche}.json)`);
   if (problems.length) return { problems };
   return {
     design: {
-      body, css, js,
+      body: ex.html, css, js,
       fonts: [look.fonts.heading.query, look.fonts.body.query],
       families: { heading: look.fonts.heading.family, body: look.fonts.body.family },
     },
@@ -114,10 +117,10 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
     for (const s of scenes) {
       const f = path.join(scDir, `${s.id}.html`);
       const text = await fs.readFile(f, 'utf8').catch(() => null);
-      const r = text ? parseScene(text, look) : { problems: ['scene file was not written'] };
+      const r = text ? parseScene(text, look, s.id) : { problems: ['scene file was not written'] };
       if (r.problems) {
         const bak = `${f}.bak`;
-        const old = (await exists(bak)) ? parseScene(await fs.readFile(bak, 'utf8'), look) : null;
+        const old = (await exists(bak)) ? parseScene(await fs.readFile(bak, 'utf8'), look, s.id) : null;
         if (old?.design && index[s.id] === keyOf(s)) { await fs.rename(bak, f); failed.delete(s.id); } // keep the earlier good one
         else failed.set(s.id, r.problems);
       } else { failed.delete(s.id); index[s.id] = keyOf(s); }
@@ -146,7 +149,7 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
   for (const s of plan.scenes) {
     if (failed.has(s.id)) continue;
     const text = await fs.readFile(path.join(scDir, `${s.id}.html`), 'utf8').catch(() => null);
-    const r = text ? parseScene(text, look) : null;
+    const r = text ? parseScene(text, look, s.id) : null;
     if (r?.design) designs[s.id] = r.design;
     else failed.set(s.id, r?.problems || ['missing']);
   }
@@ -162,7 +165,7 @@ export async function acceptEditedScenes(job, { plan, look, formats }) {
   for (const s of plan.scenes) {
     const text = await fs.readFile(path.join(scDir, `${s.id}.html`), 'utf8').catch(() => null);
     if (!text) continue;
-    const r = parseScene(text, look);
+    const r = parseScene(text, look, s.id);
     if (r.problems) bad.push(`${s.id}: ${r.problems.join('; ')}`);
     else index[s.id] = designKey(s, s.visual, look, formats);
   }

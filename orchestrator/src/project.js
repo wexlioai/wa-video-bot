@@ -19,6 +19,7 @@ export function defaultSettings() {
     voice: { speed: 1.0 },
     music: { volume: 'low' },
     motion: { energy: 'normal' }, // calm | normal | lively
+    progress: { show: true }, // progress line + section names at the top
   };
 }
 
@@ -30,6 +31,7 @@ export function normalizeSettings(s = {}) {
     voice: { ...d.voice, ...(s.voice || {}) },
     music: { ...d.music, ...(s.music || {}) },
     motion: { ...d.motion, ...(s.motion || {}) },
+    progress: { ...d.progress, ...(s.progress || {}) },
   };
   if (!CAPTION_SIZES.includes(out.captions.size)) out.captions.size = 'L';
   if (!CAPTION_POSITIONS.includes(out.captions.position)) out.captions.position = 'bottom';
@@ -69,6 +71,8 @@ export const TWEAKS = {
   'music-quieter': { label: 'Music quieter', apply: (s) => { s.music.volume = step(LEVELS, s.music.volume, -1); } },
   'music-off': { label: 'No music', apply: (s) => { s.music.volume = 'off'; } },
   'music-on': { label: 'Music back on', apply: (s) => { if (s.music.volume === 'off') s.music.volume = 'low'; } },
+  'progress-off': { label: 'Hide the progress bar', apply: (s) => { s.progress.show = false; } },
+  'progress-on': { label: 'Show the progress bar', apply: (s) => { s.progress.show = true; } },
   'motion-calmer': { label: 'Calmer motion', apply: (s) => { s.motion.energy = s.motion.energy === 'lively' ? 'normal' : 'calm'; } },
   'motion-livelier': { label: 'Livelier motion', apply: (s) => { s.motion.energy = s.motion.energy === 'calm' ? 'normal' : 'lively'; } },
 };
@@ -95,6 +99,7 @@ export function describeSettings(s) {
     'Voice speed': `${s.voice.speed.toFixed(2)}×`,
     'Music': s.music.volume,
     'Motion': s.motion.energy,
+    'Progress bar': s.progress.show ? 'on' : 'off',
   };
 }
 
@@ -169,6 +174,8 @@ const TWEAK_PATTERNS = [
   ['music-quieter', /\b(music)\b.*\b(quieter|lower|softer|down|less)\b|\b(quieter|lower|softer)\b.*\bmusic\b/i],
   ['music-louder', /\b(music)\b.*\b(louder|higher|up|more)\b|\blouder\b.*\bmusic\b/i],
   ['music-off', /\b(no|remove|without|turn off)\b.*\bmusic\b|\bmusic\b.*\boff\b/i],
+  ['progress-off', /\b(no|hide|remove|without)\b.*\b(progress|top bar|section names)\b/i],
+  ['progress-on', /\b(show|add)\b.*\b(progress|top bar|section names)\b/i],
   ['motion-calmer', /\b(calmer|calm|less (motion|movement|animation)|slower animations?)\b/i],
   ['motion-livelier', /\b(livelier|more (motion|movement|animation|energy|energetic)|faster animations?)\b/i],
 ];

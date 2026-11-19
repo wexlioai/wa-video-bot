@@ -38,6 +38,8 @@ export async function buildProps(job, plan, onScene, { speed = 1 } = {}) {
       durationInFrames: Math.ceil((info.duration + GAP) * FPS),
       words: info.words,
       visual: s.visual,
+      section: s.section || null,
+      hook: !!s.hook,
     });
   }
   const props = { fps: FPS, language: plan.language, theme: plan.theme, captions: cfg.render.captions, scenes };

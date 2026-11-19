@@ -24,7 +24,7 @@ export async function nicheStyles(niche) {
 }
 /** Prompt text: the niche's rules file (copied into _ref by prepareRefs). */
 export const rulesText = (niche) => (niche === 'islamic'
-  ? 'IMPORTANT: this channel publishes Islamic scholarship and history. Read `_ref/rules-islamic.md` first and follow it strictly in everything you make.'
+  ? 'IMPORTANT: this channel publishes Islamic scholarship and history. Read `_ref/rules-islamic.md` first and follow it strictly in everything you make. Ready-made SVG props for this niche (map of Arabia with real city positions, seals, stamps, documents, scrolls, book shelf, scales, reed pen, arches, domes skyline, lattice, girih patterns, banners, palms, tents, city wall, timeline, lantern, ornaments) are listed in `_ref/props-islamic.json`: in scene files use them with <prop name="…" class="…" style="position:absolute;…"></prop> instead of drawing these yourself, and animate their listed parts. Study the finished example scenes `_ref/examples/islamic-*.html` first: match or beat their quality (instant strong first frame, camera moves, things arriving exactly when spoken, one payoff moment).'
   : '');
 export const stylesText = (styles) => styles.map((s) => `  - \`${s.id}\` ${s.name} (file \`_ref/${s.file}\`): ${s.look}. Fits: ${s.fits}.`).join('\n');
 async function fontList() {
@@ -37,6 +37,15 @@ export async function prepareRefs(jobDir) {
   await fs.mkdir(ref, { recursive: true });
   for (const f of await fs.readdir(STYLES_DIR)) {
     if (/\.(md|json)$/.test(f)) await fs.copyFile(path.join(STYLES_DIR, f), path.join(ref, f));
+  }
+  // finished example scenes: _ref/examples/
+  await fs.mkdir(path.join(ref, 'examples'), { recursive: true });
+  for (const f of await fs.readdir(path.join(STYLES_DIR, 'examples')).catch(() => [])) {
+    await fs.copyFile(path.join(STYLES_DIR, 'examples', f), path.join(ref, 'examples', f));
+  }
+  // prop catalogues: _ref/props-<niche>.json
+  for (const niche of await fs.readdir(path.join(STYLES_DIR, 'props')).catch(() => [])) {
+    await fs.copyFile(path.join(STYLES_DIR, 'props', niche, 'props.json'), path.join(ref, `props-${niche}.json`)).catch(() => {});
   }
   await fs.mkdir(path.join(jobDir, 'look'), { recursive: true });
 }

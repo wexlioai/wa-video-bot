@@ -1,0 +1,3 @@
+<svg class="prop prop-arch" viewBox="0 0 600 920" xmlns="http://www.w3.org/2000/svg"><path class="arch-fill" d="M60 900 V420 Q60 200 300 60 Q540 200 540 420 V900 Z" fill="var(--bg2)"/>
+<path class="arch-outline" d="M60 900 V420 Q60 200 300 60 Q540 200 540 420 V900" fill="none" stroke="var(--accent)" stroke-width="10"/>
+<path class="arch-inner" d="M90 900 V430 Q90 225 300 100 Q510 225 510 430 V900" fill="none" stroke="var(--accent)" stroke-width="3" opacity=".7"/></svg>

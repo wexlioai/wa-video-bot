@@ -39,13 +39,20 @@ colour, fonts, the voice track and the captions itself. **Do not draw captions o
 1. Deterministic: no `Math.random`, `Date`, `setTimeout`, `setInterval`, `requestAnimationFrame`, `fetch`, infinite `repeat: -1`, or `yoyo` without a finite repeat. The renderer seeks the timeline frame by frame.
 2. Every tween has an explicit position and ends at or before `D`. Long "breathing" moves (slow drift, float) may run until `D`.
 3. Sync to the voice: an element that illustrates a word or number appears at `when('that word')` (minus about 0.15 s).
-4. Safe areas: keep important things 110 px from the edges. Long: keep the bottom 200 px free for captions. Short: keep the bottom 560 px and top 180 px free.
+4. Safe areas: keep important things 110 px from the edges, and out of the top 100 px (long) / top 240 px (Short), which the bot uses for the progress line and section names. Long: keep the bottom 200 px free for captions. Short: keep the bottom 560 px and top 180 px free.
 5. Text on screen: at most about 12 words per scene besides big numbers; never repeat the whole narration.
 6. Use only the palette colours (plus white/black with transparency for shadows and paper effects).
 7. The scene's own background must cover the full canvas (a full-size element with `position:absolute; inset:0`).
 8. Something should always be gently moving while the scene holds (a slow drift, sway or scale), but never jittery.
 9. Elements are `position:absolute` inside `.sc`, which is already full size (`position:absolute; inset:0`).
 10. For Urdu, text runs right-to-left; use the heading/body font variables.
+
+## Ready-made props
+If `_ref/props-<niche>.json` exists, use its props instead of drawing those things yourself:
+`<prop name="wax-seal" class="seal" style="position:absolute;left:640px;top:720px;width:120px" text="3 AH"></prop>`.
+The bot swaps the tag for the SVG; `class`, `style` and `id` go onto the `<svg>`, other attributes fill the
+prop's params. Animate the parts the catalogue lists (`.sc .seal .seal-ring`, `.sc .map .city-medina`…).
+Finished examples using props are in `_ref/examples/`.
 
 ## Example (very small)
 ```html

@@ -545,7 +545,7 @@ const steps = {
     await saveJob(job);
     const p = await startProgress('🧠 Claude is reading your script and planning the scenes… (usually about a minute)');
     try {
-      await askClaude(job.dir, 'plan', { SOURCE: job.srcName });
+      await askClaude(job.dir, 'plan', { SOURCE: job.srcName, HOOK_RULE: (process.env.HOOK || 'on') === 'off' ? '' : HOOK_RULE });
     } finally {
       await p.done();
     }
@@ -1164,6 +1164,9 @@ async function startJob(saveSource) {
   await saveJob(job);
   await runStep(job, 'plan');
 }
+
+// The cold open: the only words the bot adds to a script (HOOK=off in .env turns it off).
+const HOOK_RULE = `9. **Hook.** Start with ONE extra scene (id "s00", section "hook", visual type "statement") whose narration is 1-2 short spoken sentences (max 30 words) that make the viewer need to keep watching: the central question or dilemma, or the most surprising fact, taken only from the script (no new facts, no exaggeration, no "in this video"). Its visual text is the question or fact in at most 10 words. Set "hook": true on that scene.`;
 
 // a single video with every word: only up to this many minutes (planning and rendering limits)
 const FULL_SINGLE_MAX = 45;

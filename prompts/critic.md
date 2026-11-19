@@ -15,6 +15,7 @@ Score each designed scene from 1 to 5, where 4 means "good enough to publish" an
 - consistency with the style and the palette;
 - variety (not the same layout as its neighbours);
 - fit: the visual clearly illustrates what the narration says;
+- retention (see `_ref/retention.md`): a strong first frame, something changing every 2-4 s, emphasis on key words, building up rather than dumping, a payoff; a dull or static scene is at most 3;
 - the niche rules above, if any (a depiction of a person where none is allowed is an automatic 1);
 - banned looks: anything neon or glowing, cyberpunk, glitch, terminal or code-like, HUD, brain-circuit imagery or game words is an automatic 1.
 Take `auto_issues` seriously: a scene with text cut off, overlapping text or a script error is at most 3.

@@ -9,10 +9,10 @@ Write a single file `plan.json` that follows this schema:
 {{SCHEMA}}
 
 Rules:
-1. **Narration is the user's own words.** Copy the script verbatim. Only remove what should not be spoken: headings like "Scene 1", "Intro", "Outro", speaker labels, bracketed stage directions such as [music] or (show map), page numbers, and visual notes. Fix obvious typos or extraction damage. Do not translate, summarize, rewrite or add sentences.
+1. **Narration is the user's own words.** Copy the script verbatim. Only remove what should not be spoken: headings like "Scene 1", "Intro", "Outro", speaker labels, bracketed stage directions such as [music] or (show map), page numbers, and visual notes. Fix obvious typos or extraction damage. Do not translate, summarize, rewrite or add sentences (the only exception is the hook in rule 9).
 2. If the script is in Roman Urdu (Urdu written in English letters), write the narration in Urdu script with the same words, and set language "ur".
 3. Split into scenes at natural thought boundaries: one idea per scene, 1-4 sentences, about 120-350 characters each. Never split mid-sentence.
-4. Choose the visual type that fits each scene's content (see the table). Vary the types and don't use the same type more than 3 times in a row. The first scene is `title`.
+4. Choose the visual type that fits each scene's content (see the table). Vary the types and don't use the same type more than 3 times in a row. The first scene is `title` (right after the hook scene, if there is one).
 5. Pick theme colors that suit the topic.
 6. Write title, description and tags in the script's language. Tags may also include English keywords.
 7. Set `kind` and give every scene a `section` (a short lowercase word) following the text's own structure:
@@ -24,5 +24,7 @@ Rules:
    - `general`: intro, body, ending
    Use the section names that fit; scenes of one section are consecutive.
 8. Honorifics stay exactly as written (for example ﷺ). Never add Arabic that is not in the script.
+{{HOOK_RULE}}
+10. The title must make people want to watch: a clear, curious, accurate promise of what they will learn (max 60 characters), never clickbait or exaggeration.
 
 Write only `plan.json`. Do not create any other file. When finished, reply with just: DONE
