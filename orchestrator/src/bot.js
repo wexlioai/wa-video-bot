@@ -916,7 +916,7 @@ const steps = {
     }
     return ask(job, 'longKind', 'What should I make?', [
       { label: source ? `📺 Episodes: ~${epCount} × ~${fmtMin(epShow)} (new script each)` : `📺 Episodes: ~${epCount} × ~${fmtMin(epMin)} (every word)`, value: 'episodes' },
-      ...ranges.map((r) => ({ label: `🎬 One video, ${r.label}`, value: r.value })),
+      ...(await Promise.all(ranges.map(async (r) => ({ label: `🎬 One video, ${r.label} · ~${fmtHours((await estimate(r.value === 'full' ? m.minutes : r.target)).renderHours)} render`, value: r.value })))),
       ...(source ? [] : [{ label: '💡 Use it as source material instead', value: 'tosource' }]),
       { label: '🗑 Cancel', value: 'cancel' },
     ]);
@@ -1212,9 +1212,13 @@ async function startJob(saveSource) {
   job.longWish = readLongWish(job.request);
   job.needSample = true; // never a full video without a demo first
   await saveJob(job);
-  await wa.sendText(
-    `📄 Got your document${m.words ? ` (~${m.words.toLocaleString('en-US')} words, ${lang === 'ur' ? 'Urdu' : 'English'}, about ${fmtMin(m.minutes)} if read aloud)` : ''}.`,
-  );
+  const est = await modeEstimates(m);
+  await wa.sendText([
+    `📄 Got your document${m.words ? `: about ${m.pages > 1 ? `${m.pages.toLocaleString('en-US')} pages, ` : ''}${m.words.toLocaleString('en-US')} words, ${lang === 'ur' ? 'Urdu' : 'English'}` : ''}.`,
+    `📜 *As a script (word for word):* ${est.script}`,
+    `💡 *As source material (a new script from its key points):* ${est.source}`,
+    '_Estimates; the final length depends on the content. Render times are for this PC._',
+  ].join('\n\n'));
   const mode = job.mode || readModeWish(job.request);
   if (mode) {
     job.mode = mode;
@@ -1223,9 +1227,36 @@ async function startJob(saveSource) {
     return afterMode(job);
   }
   return ask(job, 'mode', 'How should I use this document?', [
-    { label: '📜 It is my script: read it word for word', value: 'script' },
-    { label: '💡 It is source material: write a new script from its key points', value: 'source' },
+    { label: `📜 My script, word for word (${est.scriptShort})`, value: 'script' },
+    { label: `💡 Source material, new script (${est.sourceShort})`, value: 'source' },
   ]);
+}
+
+/** Durations and render times for the two ways of using a document, to decide quickly. */
+async function modeEstimates(m) {
+  const long = m.minutes > LONG_MINUTES();
+  const video = m.minutes + 0.3; // plus the short opening hook
+  const r = await estimate(video);
+  let script;
+  let scriptShort;
+  if (!long) {
+    script = `a video of about *${fmtMin(video)}*, about ${fmtHours(r.renderHours)} of rendering.`;
+    scriptShort = `~${fmtMin(video)} video`;
+  } else {
+    const eps = Math.max(2, Math.round(m.words / 1400));
+    const epMin = m.minutes / eps;
+    const re = await estimate(epMin);
+    script = `*${fmtMin(m.minutes)}* in total: about *${eps} episodes* of ~${fmtMin(epMin)} each (about ${fmtHours(re.renderHours)} rendering per episode)${m.minutes <= FULL_SINGLE_MAX ? `, or one video of ${fmtMin(video)}` : ''}.`;
+    scriptShort = `~${eps} × ${fmtMin(epMin)}`;
+  }
+  const ranges = singleRanges(m.minutes, 'source');
+  const lo = ranges[0];
+  const hi = ranges[ranges.length - 1];
+  const rLo = await estimate(lo.target);
+  const rHi = await estimate(hi.target);
+  const top = hi.max >= 60 ? '1 hour' : `${hi.max} min`;
+  const source = `one video of *${lo.min} min to ${top}* (you choose), about ${fmtHours(rLo.renderHours)} to ${fmtHours(rHi.renderHours)} of rendering${long ? `; or a series of about ${Math.max(2, Math.round(m.words / 1400))} episodes of ~8 min, each with its own new script` : ''}.`;
+  return { script, scriptShort, source, sourceShort: `you pick ${lo.min} min to ${top}` };
 }
 
 /** "script" = narrate the words as written; "source" = Claude writes a new script from the material. */
@@ -1297,6 +1328,7 @@ async function singleChosen(job, v) {
 /** "How long should the single video be?" */
 async function askSingleLength(job) {
   const ranges = singleRanges(job.long?.minutes || 60, job.mode || 'source');
+  for (const r of ranges) r.label = `${r.label} · ~${fmtHours((await estimate(r.value === 'full' ? job.long.minutes : r.target)).renderHours)} render`;
   return ask(job, 'singleLen', 'How long should the video be? (I write a new script from the key points, in my own words, at that length. You can also type a length, e.g. 15 min.)',
     ranges.map((r) => ({ label: `🎬 ${r.label}`, value: r.value })));
 }
