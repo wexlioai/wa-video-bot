@@ -259,6 +259,7 @@ async function onChoice(job, option) {
 }
 
 async function voiceChosen(job, voice, after) {
+  if (job.voice && job.voice.id !== voice.id) { job.needSample = true; job.sampleOk = false; } // new voice: demo again
   job.voice = { id: voice.id, name: voice.name, provider: cfg.tts.provider, family: currentFamily() };
   await saveJob(job);
   const prefs = await loadPrefs();
@@ -590,6 +591,8 @@ const steps = {
     const saved = prefs.look?.mode === 'always' && !job.forceLookChoice ? prefs.look : null;
     job.forceLookChoice = false;
     job.storyboardOk = false;
+    job.needSample = true; // a new look is shown as a demo before any full render
+    job.sampleOk = false;
     const p = await startProgress(saved
       ? `🎨 Designing the look in your saved style (${saved.styleName})…`
       : '🎨 Claude is designing 3 looks for your video… (about 2-3 minutes)');
@@ -694,7 +697,7 @@ const steps = {
     await saveJob(job);
     const plan = await loadPlan(job);
     const settings = await initSettings(job, (await loadPrefs()).defaultSettings);
-    if (job.needSample && !job.sampleOk && (await motionEngine()) === 'hyperframes' && (await loadLook(job.dir))) {
+    if (job.needSample && !job.sampleOk) {
       return steps.sample(job, plan, settings);
     }
     const p = await startProgress(`🎙 Recording the voiceover with ${job.voice.name}…`);
@@ -822,11 +825,16 @@ const steps = {
       await buildProps(job, sub, null, { speed: settings.voice.speed });
       const props = await readJson(path.join(job.dir, 'props.json'));
       seconds = props.scenes.reduce((a, x) => a + x.durationInFrames, 0) / (props.fps || 30);
-      await p.update('🎬 Designing and animating the sample…', true);
-      const d = await designScenes(job, { plan: sub, props, look, formats: job.formats });
-      const { music, sfx } = await ensureSound(job, settings, p);
-      await p.update('🎬 Rendering the sample…', true);
-      out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx });
+      if (look && (await motionEngine()) === 'hyperframes') {
+        await p.update('🎬 Designing and animating the sample…', true);
+        const d = await designScenes(job, { plan: sub, props, look, formats: job.formats });
+        const { music, sfx } = await ensureSound(job, settings, p);
+        await p.update('🎬 Rendering the sample…', true);
+        out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx });
+      } else {
+        await p.update('🎬 Rendering the sample…', true);
+        out = await renderVideo(job, job.formats[0], null, { name: 'sample' });
+      }
       await p.done(`🎬 Sample ready (took ${p.elapsed()}).`);
     } catch (e) {
       await p.done();
@@ -834,7 +842,7 @@ const steps = {
     }
     const parent = await seriesOf(job);
     await wa.sendVideo(fileUrl(job, path.relative(job.dir, out.preview)),
-      `Sample (${Math.round(seconds)} s): look *${look.name}*, voice *${job.voice?.name || ''}*. The full ${parent ? 'episode' : 'video'} is about ${fmt(job.estSeconds || 0)}.`, true, 'sample.mp4');
+      `Sample (${Math.round(seconds)} s)${look ? `: look *${look.name}*` : ''}, voice *${job.voice?.name || ''}*. The full ${parent ? 'episode' : 'video'} is about ${fmt(job.estSeconds || 0)}.`, true, 'sample.mp4');
     const opts = parent && job.episode === 1
       ? [
         { label: '▶️ Make episode 1 (ask me before each next)', value: 'go' },
@@ -1143,7 +1151,7 @@ async function startJob(saveSource) {
     `📄 Got your script${m.words ? ` (~${m.words.toLocaleString('en-US')} words, ${lang === 'ur' ? 'Urdu' : 'English'}, about ${fmtMin(m.minutes)} when read aloud)` : ''}.`,
   );
   if (m.minutes > LONG_MINUTES()) return runStep(job, 'longform');
-  job.needSample = m.minutes > SAMPLE_MINUTES();
+  job.needSample = true; // never a full video without a demo first
   await saveJob(job);
   await runStep(job, 'plan');
 }
@@ -1514,13 +1522,16 @@ async function handleMessage(data) {
       const sections = (await readJson(path.join(job.dir, 'sections.json'))).sections;
       const partText = await episodeText(job.dir, sections, picked.flatMap((e) => e.sections));
       const mins = picked.reduce((x, e) => x + e.minutes, 0);
-      return jobFromText(partText, { needSample: mins > SAMPLE_MINUTES(), fromLong: job.id },
+      return jobFromText(partText, { needSample: true, fromLong: job.id },
         `📄 Making episode${picked.length > 1 ? `s ${picked[0].n}-${picked[picked.length - 1].n}` : ` ${picked[0].n}`} (about ${fmtMin(mins)}) as one video…`);
     }
     if ((job.choice.kind === 'storyboard' || job.choice.kind === 'sample') && text.trim().length > 2) {
       job.choice = null;
       await saveJob(job);
-      return runStep(job, 'redesign', { request: text });
+      const designed = (await loadLook(job.dir)) && (await exists(path.join(job.dir, 'scenes')));
+      if (designed) return runStep(job, 'redesign', { request: text });
+      job.changeNote = text.slice(0, 120);
+      return runStep(job, 'edit', text); // classic engine: change the plan, then a new demo
     }
     if (job.choice.kind !== 'approve') {
       return wa.sendText(`Please tap an option in the poll above, or reply with its number (1-${job.choice.options.length}).`);

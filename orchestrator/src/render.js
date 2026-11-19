@@ -58,10 +58,10 @@ async function remotion(args, opts) {
 }
 
 /** format: 'long' | 'short'. Returns {full, preview} absolute paths. onPercent(0-100) reports render progress. */
-export async function renderVideo(job, format, onPercent) {
+export async function renderVideo(job, format, onPercent, { name = format } = {}) {
   const comp = format === 'short' ? 'Short' : 'Long';
-  const full = path.join(job.dir, `${format}.mp4`);
-  const preview = path.join(job.dir, `${format}-preview.mp4`);
+  const full = path.join(job.dir, `${name}.mp4`);
+  const preview = path.join(job.dir, `${name}-preview.mp4`);
   await remotion([
     'render', 'src/index.ts', comp, full,
     `--props=${path.join(job.dir, 'props.json')}`,
@@ -95,7 +95,7 @@ export async function renderVideo(job, format, onPercent) {
     hd = false;
   }
 
-  if (format === 'long') {
+  if (format === 'long' && name === format) {
     await remotion([
       'still', 'src/index.ts', comp, path.join(job.dir, 'thumb.png'),
       `--props=${path.join(job.dir, 'props.json')}`, `--public-dir=${job.dir}`, '--frame=20', '--log=error',
