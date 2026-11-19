@@ -180,6 +180,15 @@ async function onChoice(job, option) {
       job.thumbChosen = true;
       await saveJob(job);
       return runStep(job, 'publish');
+    case 'singleLen': {
+      if (v === 'full') {
+        job.state = 'DONE';
+        await saveJob(job);
+        const full = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
+        return jobFromText(full, { needSample: true, fromLong: job.id }, '📖 Making one video with every word. Planning it…');
+      }
+      return runStep(job, 'condense', { minutes: Number(v) });
+    }
     case 'sample': {
       if (v === 'go' || v === 'all') {
         if (v === 'all') { const parent = await seriesOf(job); if (parent) { parent.series.auto = true; await saveJob(parent); } }
@@ -194,10 +203,23 @@ async function onChoice(job, option) {
       await saveJob(job);
       return wa.sendText('✏️ Type what to change, for example "warmer colours", "bigger title", "less text on screen".');
     }
+    case 'longKind':
     case 'longMode':
-      if (v === 'series') { job.state = 'DONE'; await saveJob(job); return startEpisode(job, 1); }
-      if (v === 'summary') return runStep(job, 'condense');
       if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled.'); }
+      if (v === 'episodes') return runStep(job, 'outlineSeries');
+      if (v === 'series') { job.state = 'DONE'; await saveJob(job); return startEpisode(job, 1); }
+      if (v === 'single') {
+        const opts = [
+          { label: '🎯 Short summary (about 5 min)', value: 5 },
+          { label: '🎯 Summary (about 10 min)', value: 10 },
+          { label: '🎯 Detailed summary (about 20 min)', value: 20 },
+        ];
+        if (job.long?.minutes <= FULL_SINGLE_MAX) {
+          const est = await estimate(job.long.minutes);
+          opts.push({ label: `📖 Every word in one video (${fmtMin(job.long.minutes)}, ~${fmtHours(est.renderHours)} rendering)`, value: 'full' });
+        }
+        return ask(job, 'singleLen', 'How long should the single video be? (A summary keeps the key ideas, facts and best lines.)', opts);
+      }
       job.choice = { kind: 'part', options: [] };
       job.state = 'AWAIT_CHOICE';
       await saveJob(job);
@@ -827,50 +849,66 @@ const steps = {
     ]);
   },
 
-  // Long text: split into sections, outline episodes, show the size and costs, ask what to make.
+  // Long text: show its size, then ask first: episodes, or one single video?
   async longform(job) {
     job.state = 'PLANNING';
     await saveJob(job);
     const text = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
     const lang = detectLanguage(text);
     const m = measure(text, lang);
-    const p = await startProgress('📚 This is a long text. Reading its structure to plan it…');
+    await writeSections(job.dir, text, lang); // local, no Claude
+    job.language = lang;
+    job.long = m;
+    await saveJob(job);
+    const all = await estimate(m.minutes);
+    await wa.sendText([
+      `📚 This is a long text: about ${m.pages.toLocaleString('en-US')} pages, ${m.words.toLocaleString('en-US')} words, *${fmtMin(m.minutes)}* if every word is read aloud.`,
+      `Reading every word would take about *${fmtHours(all.renderHours)}* of rendering on this PC and about *${all.voiceCredits.toLocaleString('en-US')} voice credits*.`,
+    ].join('\n\n'));
+    return ask(job, 'longKind', 'Do you want episodes or one single video?', [
+      { label: '📺 Episodes (a series, every word read)', value: 'episodes' },
+      { label: '🎬 One single video', value: 'single' },
+      { label: '🗑 Cancel', value: 'cancel' },
+    ]);
+  },
+
+  // Episodes chosen: Claude groups the sections into episodes, then the list + costs.
+  async outlineSeries(job) {
+    job.state = 'PLANNING';
+    await saveJob(job);
+    const sections = (await readJson(path.join(job.dir, 'sections.json'))).sections;
+    const p = await startProgress('📺 Planning the episodes…');
     let outline;
     try {
-      const sections = await writeSections(job.dir, text, lang);
       await askClaude(job.dir, 'outline', {}, { maxTurns: 15 }).catch((e) => { if (e instanceof ClaudeLimitError) throw e; console.log(`${ts()} outline failed: ${e.message}`); });
       outline = await loadOutline(job.dir, sections);
-      const mins = (nums) => nums.reduce((a, n) => a + (sections.find((x) => x.n === n)?.minutes || 0), 0);
-      job.kind = 'series';
-      job.language = lang;
-      job.series = {
-        title: outline.title, summary: outline.summary, auto: false,
-        episodes: outline.episodes.map((e) => ({ ...e, minutes: +mins(e.sections).toFixed(1), status: 'todo', jobId: null })),
-      };
-      await saveJob(job);
     } finally {
       await p.done();
     }
+    const mins = (nums) => nums.reduce((a, n) => a + (sections.find((x) => x.n === n)?.minutes || 0), 0);
+    job.kind = 'series';
+    job.series = {
+      title: outline.title, summary: outline.summary, auto: false,
+      episodes: outline.episodes.map((e) => ({ ...e, minutes: +mins(e.sections).toFixed(1), status: 'todo', jobId: null })),
+    };
+    await saveJob(job);
     const eps = job.series.episodes;
-    const all = await estimate(m.minutes);
-    const avg = m.minutes / eps.length;
+    const per = await estimate(job.long.minutes / eps.length);
     await wa.sendText([
-      `📚 *${job.series.title}*${job.series.summary ? `\n${job.series.summary}` : ''}`,
-      `About ${m.pages.toLocaleString('en-US')} pages, ${m.words.toLocaleString('en-US')} words: *${fmtMin(m.minutes)}* if every word is read.`,
-      `I split it into *${eps.length} episodes* of about ${fmtMin(avg)} each:`,
-      eps.slice(0, 12).map((e) => `${e.n}. ${e.title} (${fmtMin(e.minutes)})`).join('\n') + (eps.length > 12 ? `\n…and ${eps.length - 12} more` : ''),
-      `Making all of it: about *${fmtHours(all.renderHours)}* of rendering on this PC, about *${all.voiceCredits.toLocaleString('en-US')} voice credits*, and many Claude steps (the bot waits when your plan's limit is reached).`,
+      `📺 *${job.series.title}*${job.series.summary ? `\n${job.series.summary}` : ''}`,
+      `*${eps.length} episodes* of about ${fmtMin(job.long.minutes / eps.length)} each (about ${fmtHours(per.renderHours)} of rendering per episode):`,
+      eps.slice(0, 15).map((e) => `${e.n}. ${e.title} (${fmtMin(e.minutes)})`).join('\n') + (eps.length > 15 ? `\n…and ${eps.length - 15} more (send \`episodes\` for all)` : ''),
     ].join('\n\n'));
-    return ask(job, 'longMode', 'How should I turn it into video?', [
-      { label: `📺 A series: ${eps.length} episodes, every word read`, value: 'series' },
-      { label: '🎯 One summary video (about 8 minutes)', value: 'summary' },
+    return ask(job, 'longMode', 'Start the series?', [
+      { label: '▶️ Start with episode 1 (10-second sample first)', value: 'series' },
       { label: '📄 Only some episodes (I pick)', value: 'part' },
+      { label: '🎬 One single video instead', value: 'single' },
       { label: '🗑 Cancel', value: 'cancel' },
     ]);
   },
 
   // One summary video of a long text: notes per part, then one script (Claude, in steps).
-  async condense(job) {
+  async condense(job, { minutes = 8 } = {}) {
     job.state = 'PLANNING';
     await saveJob(job);
     const sections = (await readJson(path.join(job.dir, 'sections.json'))).sections;
@@ -891,10 +929,10 @@ const steps = {
         await p.update(`📖 Reading part ${i + 1}/${batches.length}…`);
         const text = await episodeText(job.dir, sections, b.map((x) => x.n));
         await fs.writeFile(path.join(dir, `input-${i + 1}.txt`), text);
-        await askClaude(job.dir, 'condense-notes', { PART: i + 1, PARTS: batches.length }, { maxTurns: 8 });
+        await askClaude(job.dir, 'condense-notes', { PART: i + 1, PARTS: batches.length, NOTES_WORDS: Math.max(400, Math.ceil((minutes * 150 * 1.6) / batches.length)) }, { maxTurns: 8 });
       }
       await p.update('✍️ Writing the summary script…', true);
-      await askClaude(job.dir, 'condense-script', { WORDS: 1200, MINUTES: 8 }, { maxTurns: 12 });
+      await askClaude(job.dir, 'condense-script', { WORDS: Math.round(minutes * ((job.language === 'ur') ? 130 : 150)), MINUTES: minutes }, { maxTurns: 15 });
     } finally {
       await p.done();
     }
@@ -1109,6 +1147,9 @@ async function startJob(saveSource) {
   await saveJob(job);
   await runStep(job, 'plan');
 }
+
+// a single video with every word: only up to this many minutes (planning and rendering limits)
+const FULL_SINGLE_MAX = 45;
 
 const fmtMin = (min) => (min >= 90 ? `${(min / 60).toFixed(1)} hours` : `${Math.max(1, Math.round(min))} min`);
 
