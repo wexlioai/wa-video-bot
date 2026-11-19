@@ -182,6 +182,10 @@ async function onChoice(job, option) {
       return runStep(job, 'publish');
     case 'singleLen':
       return singleChosen(job, v);
+    case 'mode':
+      job.mode = v;
+      await saveJob(job);
+      return afterMode(job);
     case 'sample': {
       if (v === 'go' || v === 'all') {
         if (v === 'all') { const parent = await seriesOf(job); if (parent) { parent.series.auto = true; await saveJob(parent); } }
@@ -200,6 +204,7 @@ async function onChoice(job, option) {
     case 'longMode':
       if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled.'); }
       if (v === 'episodes') return runStep(job, 'outlineSeries');
+      if (v === 'tosource') { job.mode = 'source'; await saveJob(job); return runStep(job, 'longform'); }
       if (v === 'series') { job.state = 'DONE'; await saveJob(job); return startEpisode(job, 1); }
       if (v === 'single') return askSingleLength(job);
       if (v === 'full' || String(v).startsWith('len:')) return singleChosen(job, v);
@@ -528,6 +533,17 @@ const steps = {
     await saveJob(job);
     const p = await startProgress('🧠 Claude is reading your script and planning the scenes… (usually about a minute)');
     try {
+      if (job.adapt && !job.adapted) { // source-material episode: write its new script first
+        await p.update('✍️ Writing this episode\'s script from its part of the text…', true);
+        await askClaude(job.dir, 'adapt', adaptVars(job, job.adapt.minutes, 'script.txt', 'adapted.txt',
+          `This is episode ${job.episode} (${job.episodeTitle}) of a series; write it as one episode that stands on its own.`), { maxTurns: 12 });
+        const adapted = await fs.readFile(path.join(job.dir, 'adapted.txt'), 'utf8').catch(() => '');
+        if (adapted.split(/\s+/).length < 60) throw new Error('The episode script came out empty. Send `retry`.');
+        await fs.writeFile(path.join(job.dir, 'script.txt'), adapted);
+        job.srcName = 'adapted.txt';
+        job.adapted = true;
+        await saveJob(job);
+      }
       await askClaude(job.dir, 'plan', { SOURCE: job.srcName, HOOK_RULE: (process.env.HOOK || 'on') === 'off' ? '' : HOOK_RULE });
     } finally {
       await p.done();
@@ -864,11 +880,18 @@ const steps = {
     const epCount = sections.length;
     const epMin = m.minutes / Math.max(1, epCount);
     const perEp = await estimate(epMin);
-    const ranges = singleRanges(m.minutes);
+    const source = (job.mode || 'source') === 'source';
+    const ranges = singleRanges(m.minutes, job.mode || 'source');
+    const epShow = source ? Math.min(epMin, 8) : epMin; // new scripts per episode aim at about 8 minutes
+    const perEpShow = source ? await estimate(epShow) : perEp;
     await wa.sendText([
       `📚 This is a long text: about ${m.pages.toLocaleString('en-US')} pages, ${m.words.toLocaleString('en-US')} words, *${fmtMin(m.minutes)}* if every word is read aloud.`,
-      `📺 *As episodes* (every word read): about *${epCount} episodes* of about *${fmtMin(epMin)}* each, about ${fmtHours(perEp.renderHours)} of rendering per episode.`,
-      `🎬 *As one single video*: you choose the length (${ranges.map((r) => r.label).join(', ')}). The video covers the whole text, condensed to that length.`,
+      source
+        ? `📺 *As episodes*: about *${epCount} episodes* of about *${fmtMin(epShow)}* each, each with a new script from its part, about ${fmtHours(perEpShow.renderHours)} of rendering per episode.`
+        : `📺 *As episodes* (every word read): about *${epCount} episodes* of about *${fmtMin(epMin)}* each, about ${fmtHours(perEp.renderHours)} of rendering per episode.`,
+      source
+        ? `🎬 *As one single video*: you choose the length (${ranges.map((r) => r.label).join(', ')}). I write one new script covering the whole text at that length.`
+        : (ranges.length ? `🎬 *As one single video*: every word in one video (${fmtMin(m.minutes)}).` : `🎬 Every word in one video would be ${fmtMin(m.minutes)}, too long for one video. For a shorter single video, use it as source material instead.`),
       '_These are estimates; the final number and length of the videos depend on the content._',
     ].join('\n\n'));
     const wish = job.longWish;
@@ -877,13 +900,13 @@ const steps = {
       return steps.outlineSeries(job);
     }
     if (wish?.kind === 'single') {
-      if (wish.full && m.minutes <= FULL_SINGLE_MAX) {
+      if ((wish.full || !source) && m.minutes <= FULL_SINGLE_MAX) {
         job.state = 'DONE';
         await saveJob(job);
         later(() => jobFromText(text, { needSample: true, fromLong: job.id }, '📖 One video with every word, as you asked. Planning it…'));
         return null;
       }
-      if (wish.full) await wa.sendText(`📖 Every word would be ${fmtMin(m.minutes)} in one video, which is too long for one video, so I will make a condensed version instead.`);
+      if (wish.full || !source) await wa.sendText(`📖 Every word would be ${fmtMin(m.minutes)} in one video, which is too long for one video, so I will write a condensed script instead.`);
       if (wish.minutes) {
         const minutes = Math.max(2, Math.min(SINGLE_MAX, wish.minutes));
         await wa.sendText(`🎬 One single video of about ${minutes} minutes, as you asked. It covers the key ideas, facts and best lines of the whole text.`);
@@ -892,8 +915,9 @@ const steps = {
       return askSingleLength(job);
     }
     return ask(job, 'longKind', 'What should I make?', [
-      { label: `📺 Episodes: ~${epCount} × ~${fmtMin(epMin)} (every word)`, value: 'episodes' },
+      { label: source ? `📺 Episodes: ~${epCount} × ~${fmtMin(epShow)} (new script each)` : `📺 Episodes: ~${epCount} × ~${fmtMin(epMin)} (every word)`, value: 'episodes' },
       ...ranges.map((r) => ({ label: `🎬 One video, ${r.label}`, value: r.value })),
+      ...(source ? [] : [{ label: '💡 Use it as source material instead', value: 'tosource' }]),
       { label: '🗑 Cancel', value: 'cancel' },
     ]);
   },
@@ -931,6 +955,24 @@ const steps = {
       { label: '🎬 One single video instead', value: 'single' },
       { label: '🗑 Cancel', value: 'cancel' },
     ]);
+  },
+
+  // Source material → a new script at the chosen length (one Claude step), then a new video job.
+  async adapt(job, { minutes = 5 } = {}) {
+    job.state = 'PLANNING';
+    await saveJob(job);
+    const p = await startProgress(`✍️ Writing a new ${minutes}-minute script from the document's key points…`);
+    try {
+      await askClaude(job.dir, 'adapt', adaptVars(job, minutes, 'script.txt', 'new-script.txt', ''), { maxTurns: 12 });
+    } finally {
+      await p.done();
+    }
+    const script = await fs.readFile(path.join(job.dir, 'new-script.txt'), 'utf8').catch(() => '');
+    if (script.split(/\s+/).length < 60) throw new Error('The new script came out empty. Send `retry` to try again.');
+    job.state = 'DONE';
+    await saveJob(job);
+    later(() => jobFromText(script, { needSample: true, fromLong: job.id, mode: 'script' }, `✍️ New script ready (~${script.split(/\s+/).length} words). Planning the video…`));
+    return null;
   },
 
   // One summary video of a long text: notes per part, then one script (Claude, in steps).
@@ -1165,17 +1207,47 @@ async function startJob(saveSource) {
   const text = await extractText(job.dir, path.join(job.dir, job.srcName));
   const lang = detectLanguage(text);
   const m = measure(text, lang);
-  await wa.sendText(
-    `📄 Got your script${m.words ? ` (~${m.words.toLocaleString('en-US')} words, ${lang === 'ur' ? 'Urdu' : 'English'}, about ${fmtMin(m.minutes)} when read aloud)` : ''}.`,
-  );
-  if (m.minutes > LONG_MINUTES()) {
-    job.longWish = readLongWish(job.request);
-    await saveJob(job);
-    return runStep(job, 'longform');
-  }
+  job.language = lang;
+  job.long = m;
+  job.longWish = readLongWish(job.request);
   job.needSample = true; // never a full video without a demo first
   await saveJob(job);
-  await runStep(job, 'plan');
+  await wa.sendText(
+    `📄 Got your document${m.words ? ` (~${m.words.toLocaleString('en-US')} words, ${lang === 'ur' ? 'Urdu' : 'English'}, about ${fmtMin(m.minutes)} if read aloud)` : ''}.`,
+  );
+  const mode = job.mode || readModeWish(job.request);
+  if (mode) {
+    job.mode = mode;
+    await saveJob(job);
+    await wa.sendText(mode === 'script' ? '📜 Reading it word for word, as you said.' : '💡 Using it as source material: I will write a new script from its key points.');
+    return afterMode(job);
+  }
+  return ask(job, 'mode', 'How should I use this document?', [
+    { label: '📜 It is my script: read it word for word', value: 'script' },
+    { label: '💡 It is source material: write a new script from its key points', value: 'source' },
+  ]);
+}
+
+/** "script" = narrate the words as written; "source" = Claude writes a new script from the material. */
+function readModeWish(text = '') {
+  const t = String(text).toLowerCase();
+  if (/\b(pillars?|key points|main points|points|ideas|notes|own words|based on|source|material|research|write (a|the|my) script|create (a|the)? ?script|make (a|the)? ?script|in your words|summar)/.test(t)) return 'source';
+  if (/\b(word by word|word for word|verbatim|as it is|as is|exact words|read it|my script|this is (the|my) script)\b/.test(t)) return 'script';
+  return null;
+}
+
+/** Continue once we know how to use the document. */
+async function afterMode(job) {
+  const m = job.long || { minutes: 0 };
+  if (job.mode === 'script') {
+    if (m.minutes > LONG_MINUTES()) return runStep(job, 'longform');
+    return runStep(job, 'plan');
+  }
+  // source material: long texts get the episodes/single choice, short ones only the length
+  if (m.minutes > LONG_MINUTES()) return runStep(job, 'longform');
+  const wish = job.longWish;
+  if (wish?.minutes) return singleChosen(job, `len:${wish.minutes}`);
+  return askSingleLength(job);
 }
 
 // The cold open: the only words the bot adds to a script (HOOK=off in .env turns it off).
@@ -1194,10 +1266,19 @@ const RANGES = [
   { label: '30-45 min', min: 30, max: 45, target: 38 },
   { label: 'about 1 hour', min: 50, max: 60, target: 55 },
 ];
-function singleRanges(totalMinutes) {
-  const list = RANGES.filter((r) => r.min < totalMinutes * 0.7).map((r) => ({ ...r, value: `len:${r.target}` }));
-  if (totalMinutes <= FULL_SINGLE_MAX) list.push({ label: `every word (${fmtMin(totalMinutes)})`, value: 'full' });
-  return list;
+function singleRanges(totalMinutes, mode = 'source') {
+  if (mode === 'script') {
+    // word for word: one video only when it is a sane length
+    return totalMinutes <= FULL_SINGLE_MAX ? [{ label: `every word (${fmtMin(totalMinutes)})`, value: 'full' }] : [];
+  }
+  // a new script can also expand short material (a list of pillars) into a longer video
+  const cap = Math.max(totalMinutes * 0.7, 12);
+  return RANGES.filter((r) => r.min < cap).map((r) => ({ ...r, value: `len:${r.target}` }));
+}
+
+function adaptVars(job, minutes, input, output, extra) {
+  const lang = job.language === 'ur' ? 'Urdu' : 'English';
+  return { INPUT: input, OUTPUT: output, WORDS: Math.round(minutes * (job.language === 'ur' ? 130 : 150)), MINUTES: minutes, LANGUAGE: lang, EXTRA: extra };
 }
 
 /** A single-video length was picked: every word, or a condensed script of about N minutes. */
@@ -1208,14 +1289,15 @@ async function singleChosen(job, v) {
     const full = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
     return jobFromText(full, { needSample: true, fromLong: job.id }, '📖 Making one video with every word. Planning it…');
   }
-  const minutes = Math.max(2, Math.min(SINGLE_MAX, Number(String(v).replace('len:', '')) || 10));
+  const minutes = Math.max(1, Math.min(SINGLE_MAX, Number(String(v).replace('len:', '')) || 10));
+  if ((job.long?.words || 0) <= 12000) return runStep(job, 'adapt', { minutes });
   return runStep(job, 'condense', { minutes });
 }
 
 /** "How long should the single video be?" */
 async function askSingleLength(job) {
-  const ranges = singleRanges(job.long?.minutes || 60);
-  return ask(job, 'singleLen', 'How long should the single video be? (It covers the whole text, condensed to that length. You can also type a length, e.g. 15 min.)',
+  const ranges = singleRanges(job.long?.minutes || 60, job.mode || 'source');
+  return ask(job, 'singleLen', 'How long should the video be? (I write a new script from the key points, in my own words, at that length. You can also type a length, e.g. 15 min.)',
     ranges.map((r) => ({ label: `🎬 ${r.label}`, value: r.value })));
 }
 
@@ -1262,6 +1344,7 @@ async function startEpisode(parent, n) {
   const prevId = parent.series.episodes[n - 2]?.jobId;
   const prev = prevId ? await loadJob(prevId) : null;
   const fields = { seriesId: parent.id, episode: n, episodeTitle: ep.title };
+  if ((parent.mode || 'script') === 'source') fields.adapt = { minutes: Math.max(3, Math.min(10, Math.round(ep.minutes * 0.6))) };
   if (prev && (await exists(path.join(prev.dir, 'look.json')))) {
     fields.preset = { voice: prev.voice, formats: prev.formats, from: prev.id };
     fields.sampleOk = true;
@@ -1534,9 +1617,12 @@ async function handleMessage(data) {
 
   const active = job && !['DONE', 'CANCELLED'].includes(job.state);
   if (!active) {
-    if (text.length > 300) {
+    // a short request like "make a video on Shura, justice and accountability" = source material
+    const request = /\b(make|create|generate|bana\w*)\b[^\n]{0,40}\bvideo\b|\bvideo (on|about|for)\b/i.test(text);
+    if (text.length > 300 || (request && text.length > 15)) {
       return startJob(async (j) => {
         j.srcName = 'source.txt';
+        if (request && text.length <= 300) { j.mode = 'source'; j.request = text; }
         await fs.writeFile(path.join(j.dir, j.srcName), text);
         await saveJob(j);
       });
@@ -1591,6 +1677,10 @@ async function handleMessage(data) {
   if (job.choice) {
     const opt = matchOption(job.choice, text);
     if (opt) return onChoice(job, opt);
+    if (job.choice.kind === 'mode') {
+      const mode = readModeWish(text) || (/\b(1|one)\b/.test(text) ? 'script' : /\b(2|two)\b/.test(text) ? 'source' : null);
+      if (mode) { job.choice = null; job.mode = mode; await saveJob(job); return afterMode(job); }
+    }
     if (job.choice.kind === 'longKind' || job.choice.kind === 'singleLen') {
       const wish = readLongWish(text) || (job.choice.kind === 'singleLen' && /\d/.test(text) ? readLongWish(`${text} min`) : null);
       if (wish) {
