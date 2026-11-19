@@ -3,7 +3,7 @@ import path from 'node:path';
 import { cfg, ROOT } from './config.js';
 import * as wa from './whatsapp.js';
 import { createJob, currentJob, saveJob, loadPlan, userDir, migrateSingleUser, loadJob, setCurrentJob } from './jobs.js';
-import { measure, writeSections, loadOutline, episodeText, estimate, fmtHours, LONG_MINUTES, SAMPLE_MINUTES } from './longform.js';
+import { measure, writeSections, splitSections, loadOutline, episodeText, estimate, fmtHours, LONG_MINUTES, SAMPLE_MINUTES } from './longform.js';
 import { extractText, detectLanguage } from './extract.js';
 import { askClaude, ClaudeLimitError } from './claude.js';
 import { validatePlan } from './plan.js';
@@ -182,6 +182,14 @@ async function onChoice(job, option) {
       return runStep(job, 'publish');
     case 'singleLen':
       return singleChosen(job, v);
+    case 'over12':
+    case 'veryLong':
+      if (v === 'cancel') { job.state = 'CANCELLED'; await saveJob(job); return wa.sendText('🗑 Cancelled.'); }
+      if (v === 'episodes') return runStep(job, 'outlineSeries');
+      if (choice.kind === 'over12') job.over12 = v;
+      job.longConfirmed = true;
+      await saveJob(job);
+      return singleChosen(job, 'full');
     case 'mode':
       job.mode = v;
       await saveJob(job);
@@ -544,7 +552,14 @@ const steps = {
         job.adapted = true;
         await saveJob(job);
       }
-      await askClaude(job.dir, 'plan', { SOURCE: job.srcName, HOOK_RULE: (process.env.HOOK || 'on') === 'off' ? '' : HOOK_RULE });
+      const hook = hookRule(job);
+      const scriptText = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
+      const words = (scriptText.match(/\S+/g) || []).length;
+      if (words <= PLAN_PART_WORDS * 1.3) {
+        await askClaude(job.dir, 'plan', { SOURCE: job.srcName, TEXT_FILE: 'script.txt', PLAN_FILE: 'plan.json', HOOK_RULE: hook });
+      } else {
+        await planInParts(job, scriptText, hook, p); // long scripts: one Claude step per part, then merged
+      }
     } finally {
       await p.done();
     }
@@ -772,7 +787,7 @@ const steps = {
           try {
             const props = await readJson(path.join(job.dir, 'props.json'));
             const { music, sfx } = await ensureSound(job, settings, p);
-            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct, music, sfx });
+            job.outputs[f] = await renderProject(job, f, { props, settings, designs, onPercent: onPct, music, sfx, partMinutes: job.splitParts ? YT_MAX_MIN : 0 });
           } catch (e) {
             console.log(`${ts()} hyperframes render failed, falling back to remotion: ${e.message}`);
             await wa.sendText(`⚠️ The new motion engine failed on this video, so I'm using the classic one.\n${e.message.slice(0, 300)}`);
@@ -804,7 +819,7 @@ const steps = {
       const name = `${plan.title.replace(/[^\w\s-]+/g, '').trim().slice(0, 50) || 'video'} (${label.replace(':', 'x')}).mp4`;
       // HD previews go as a document: WhatsApp keeps the original quality (tap to play)
       await wa.sendVideo(fileUrl(job, rel),
-        `${plan.title} (${label}, ${fmt(seconds)}${out.hd ? `, full HD, ${mb} MB` : ', 720p preview'}${job.version ? `, v${job.version}` : ''})`,
+        `${plan.title} (${label}, ${fmt(seconds)}${out.highlights ? ', highlights: start, middle and end (the full file is on the PC)' : out.hd ? `, full HD, ${mb} MB` : ', 720p preview'}${out.parts?.length > 1 ? `, ${out.parts.length} parts for YouTube` : ''}${job.version ? `, v${job.version}` : ''})`,
         out.hd || size > 15 * 1024 * 1024, name);
     }
     if (job.formats.includes('short') && seconds > 180) {
@@ -903,7 +918,7 @@ const steps = {
       if ((wish.full || !source) && m.minutes <= FULL_SINGLE_MAX) {
         job.state = 'DONE';
         await saveJob(job);
-        later(() => jobFromText(text, { needSample: true, fromLong: job.id }, '📖 One video with every word, as you asked. Planning it…'));
+        later(() => jobFromText(text, { needSample: true, fromLong: job.id, mode: 'script' }, '📖 One video with every word, as you asked. Planning it…'));
         return null;
       }
       if (wish.full || !source) await wa.sendText(`📖 Every word would be ${fmtMin(m.minutes)} in one video, which is too long for one video, so I will write a condensed script instead.`);
@@ -971,7 +986,7 @@ const steps = {
     if (script.split(/\s+/).length < 60) throw new Error('The new script came out empty. Send `retry` to try again.');
     job.state = 'DONE';
     await saveJob(job);
-    later(() => jobFromText(script, { needSample: true, fromLong: job.id, mode: 'script' }, `✍️ New script ready (~${script.split(/\s+/).length} words). Planning the video…`));
+    later(() => jobFromText(script, { needSample: true, fromLong: job.id, mode: 'adapted' }, `✍️ New script ready (~${script.split(/\s+/).length} words). Planning the video…`));
     return null;
   },
 
@@ -1125,6 +1140,25 @@ const steps = {
     try {
     for (const f of job.formats) {
       if (job.uploads[f]) continue;
+      const parts = job.outputs[f].parts;
+      if (parts?.length > 1) { // over 12 hours: one upload per part
+        job.uploadParts ||= {};
+        for (const [i, file] of parts.entries()) {
+          const key = `${f}-${i + 1}`;
+          if (job.uploadParts[key]) continue;
+          await p.update(`⬆️ Uploading part ${i + 1}/${parts.length}…`, true);
+          job.uploadParts[key] = await uploadVideo({
+            file, title: `${plan.title} (Part ${i + 1}/${parts.length})`.slice(0, 100),
+            description: `Part ${i + 1} of ${parts.length}.\n\n${plan.description}`, tags: plan.tags, language: plan.language,
+            thumb: f === 'long' ? ((await exists(path.join(job.dir, 'thumb.png'))) ? path.join(job.dir, 'thumb.png') : path.join(job.dir, 'frame.png')) : null,
+            isShort: false, debugDir: job.dir,
+          });
+          await saveJob(job);
+        }
+        job.uploads[f] = Object.values(job.uploadParts).join(' , ');
+        await saveJob(job);
+        continue;
+      }
       job.uploads[f] = await uploadVideo({
         file: job.outputs[f].full,
         title: plan.title,
@@ -1169,6 +1203,7 @@ async function runStep(job, name, arg) {
   }
   try {
     await serial(() => steps[name](job, arg));
+    if (job.limitWait || job.autoResumes) { job.limitWait = false; job.autoResumes = 0; await saveJob(job).catch(() => {}); }
   } catch (e) {
     console.error(`[${job.id}] step ${name} failed:`, e);
     const prevState = job.state;
@@ -1176,7 +1211,9 @@ async function runStep(job, name, arg) {
     job.failedFrom = prevState;
     await saveJob(job);
     if (e instanceof ClaudeLimitError) {
-      await wa.sendText(`Claude usage limit reached. I'll retry automatically every ${LIMIT_RETRY_MIN} min until it resets.`).catch(() => {});
+      job.limitWait = true;
+      await saveJob(job);
+      await wa.sendText(`⏸ Claude usage limit reached. Everything finished so far is kept (planned parts, designed scenes, rendered chunks). I'll retry automatically every ${LIMIT_RETRY_MIN} min until it resets, also after a restart.`).catch(() => {});
       scheduleLimitRetry(job.id);
     } else {
       await wa.sendText(`❌ ${String(e.message).slice(0, 500)}\nSend \`retry\` to try again.`).catch(() => {});
@@ -1281,11 +1318,60 @@ async function afterMode(job) {
   return askSingleLength(job);
 }
 
+// Long scripts are planned part by part (a single Claude reply cannot hold thousands of scenes).
+const PLAN_PART_WORDS = 1800;
+async function planInParts(job, text, hook, p) {
+  const dir = path.join(job.dir, 'plan-parts');
+  await fs.mkdir(dir, { recursive: true });
+  const secs = splitSections(text);
+  // merge sections into parts of about PLAN_PART_WORDS words
+  const parts = [];
+  let cur = '';
+  for (const s of secs) {
+    if (cur && (cur.match(/\S+/g) || []).length + (s.text.match(/\S+/g) || []).length > PLAN_PART_WORDS) { parts.push(cur); cur = ''; }
+    cur += (cur ? '\n\n' : '') + s.text;
+  }
+  if (cur) parts.push(cur);
+  const plans = [];
+  for (const [i, partText] of parts.entries()) {
+    const n = i + 1;
+    const planFile = path.join(dir, `plan-${n}.json`);
+    let part = await readJson(planFile).catch(() => null);
+    if (!part || validatePlan(part).length) { // parts already planned (before a limit pause) are kept
+      await p?.update(`🧠 Planning part ${n}/${parts.length} of the script…`, true);
+      await fs.writeFile(path.join(dir, `part-${n}.txt`), partText);
+      await askClaude(job.dir, 'plan', {
+        SOURCE: job.srcName,
+        TEXT_FILE: `plan-parts/part-${n}.txt`,
+        PLAN_FILE: `plan-parts/plan-${n}.json`,
+        HOOK_RULE: n === 1 ? hook : '',
+        PART_NOTE: `This text is part ${n} of ${parts.length} of one long script; plan only this part (it continues the previous part${n === 1 ? ', and it is the start of the video' : ''}). ${n > 1 ? 'Do not start with a title scene or a hook; continue the story.' : ''}`,
+      });
+      part = await readJson(planFile).catch(() => null);
+      const errs = validatePlan(part);
+      if (errs.length) throw new Error(`Part ${n} of the plan is invalid: ${errs.slice(0, 2).join('; ')}`);
+    }
+    plans.push(part);
+  }
+  const merged = { ...plans[0], scenes: plans.flatMap((pl, i) => pl.scenes.map((sc) => ({ ...sc, id: `p${String(i + 1).padStart(2, '0')}-${sc.id}` }))) };
+  await writeJson(path.join(job.dir, 'plan.json'), merged);
+}
+
+// The hook: in word-for-word mode only when asked (HOOK=always), in source mode by default (HOOK=off: never).
+function hookRule(job) {
+  const h = (process.env.HOOK || 'on').toLowerCase();
+  if (h === 'off') return '';
+  if (job.mode === 'script' && h !== 'always') return '';
+  return HOOK_RULE;
+}
+
 // The cold open: the only words the bot adds to a script (HOOK=off in .env turns it off).
 const HOOK_RULE = `9. **Hook.** Start with ONE extra scene (id "s00", section "hook", visual type "statement") whose narration is 1-2 short spoken sentences (max 30 words) that make the viewer need to keep watching: the central question or dilemma, or the most surprising fact, taken only from the script (no new facts, no exaggeration, no "in this video"). Its visual text is the question or fact in at most 10 words. Set "hook": true on that scene.`;
 
-// a single video with every word: only up to this many minutes (planning and rendering limits)
+// a single video with every word: shown without warnings up to this many minutes
 const FULL_SINGLE_MAX = 45;
+// YouTube accepts videos up to 12 hours (we keep a little margin)
+const YT_MAX_MIN = 715;
 
 // single video lengths offered for a long text (only ranges shorter than the text itself)
 const SINGLE_MAX = 60;
@@ -1299,8 +1385,8 @@ const RANGES = [
 ];
 function singleRanges(totalMinutes, mode = 'source') {
   if (mode === 'script') {
-    // word for word: one video only when it is a sane length
-    return totalMinutes <= FULL_SINGLE_MAX ? [{ label: `every word (${fmtMin(totalMinutes)})`, value: 'full' }] : [];
+    // word for word: always possible; above 12 hours YouTube needs parts (asked when chosen)
+    return [{ label: `every word (${fmtMin(totalMinutes)}${totalMinutes > YT_MAX_MIN ? ', over YouTube\'s 12 h' : ''})`, value: 'full' }];
   }
   // a new script can also expand short material (a list of pillars) into a longer video
   const cap = Math.max(totalMinutes * 0.7, 12);
@@ -1315,14 +1401,52 @@ function adaptVars(job, minutes, input, output, extra) {
 /** A single-video length was picked: every word, or a condensed script of about N minutes. */
 async function singleChosen(job, v) {
   if (v === 'full') {
+    const mins = job.long?.minutes || 0;
+    if (mins > YT_MAX_MIN && !job.over12) return askOver12(job);
+    if (mins > 120 && !job.longConfirmed) return confirmVeryLong(job);
     job.state = 'DONE';
     await saveJob(job);
     const full = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
-    return jobFromText(full, { needSample: true, fromLong: job.id }, '📖 Making one video with every word. Planning it…');
+    return jobFromText(full, { needSample: true, fromLong: job.id, mode: 'script', splitParts: job.over12 === 'split' },
+      `📖 Making one video with every word${job.over12 === 'split' ? ', uploaded in parts of up to 12 hours' : ''}. Planning it (long scripts are planned part by part)…`);
   }
   const minutes = Math.max(1, Math.min(SINGLE_MAX, Number(String(v).replace('len:', '')) || 10));
   if ((job.long?.words || 0) <= 12000) return runStep(job, 'adapt', { minutes });
   return runStep(job, 'condense', { minutes });
+}
+
+/** Over 12 hours: YouTube cannot take one file. Tell the person and let them decide. */
+async function askOver12(job) {
+  const mins = job.long.minutes;
+  const est = await estimate(mins);
+  const parts = Math.ceil(mins / YT_MAX_MIN);
+  await wa.sendText([
+    `⚠️ Every word in one video is *${fmtMin(mins)}*. YouTube accepts videos up to *12 hours*, so it cannot be uploaded as one file.`,
+    `The voice alone needs about *${est.voiceCredits.toLocaleString('en-US')} OpenSpeaker credits*.`,
+    `Rendering it would take about *${fmtHours(est.renderHours)}* on this PC${est.renderHours > 24 ? ` (about ${(est.renderHours / 24).toFixed(1)} days, running day and night)` : ''}. Designing it needs about *${claudeSteps(mins)} Claude steps*; on the Pro plan that means pauses for the usage limit, so planning and design alone can take days. The bot keeps going by itself, resumes after restarts, and never redoes finished parts.`,
+  ].join('\n\n'));
+  return ask(job, 'over12', 'What should I do?', [
+    { label: `✂️ One continuous video, uploaded as ${parts} parts (max 12 h each)`, value: 'split' },
+    { label: '📁 One file kept on this PC only (no upload)', value: 'one' },
+    { label: '📺 Make episodes instead', value: 'episodes' },
+    { label: '🗑 Cancel', value: 'cancel' },
+  ]);
+}
+
+/** Rough number of Claude calls: planning per ~12 min part, design per 4 scenes (~15 s each), review rounds. */
+function claudeSteps(minutes) {
+  const scenes = Math.ceil((minutes * 60) / 15);
+  return Math.ceil(minutes / 12) + Math.ceil(scenes / 4) + Math.ceil(scenes / 12);
+}
+
+/** Long single videos (2+ hours): show the time it takes and get an OK. */
+async function confirmVeryLong(job) {
+  const est = await estimate(job.long.minutes);
+  return ask(job, 'veryLong', `A ${fmtMin(job.long.minutes)} video takes about ${fmtHours(est.renderHours)} to render on this PC${est.renderHours > 24 ? ` (${(est.renderHours / 24).toFixed(1)} days)` : ''}, plus about ${claudeSteps(job.long.minutes)} Claude steps to plan and design (with pauses for the Pro plan limit). Go ahead?`, [
+    { label: '✅ Yes, make it', value: 'yes' },
+    { label: '📺 Make episodes instead', value: 'episodes' },
+    { label: '🗑 Cancel', value: 'cancel' },
+  ]);
 }
 
 /** "How long should the single video be?" */
@@ -1375,7 +1499,7 @@ async function startEpisode(parent, n) {
   const text = await episodeText(parent.dir, sections, ep.sections);
   const prevId = parent.series.episodes[n - 2]?.jobId;
   const prev = prevId ? await loadJob(prevId) : null;
-  const fields = { seriesId: parent.id, episode: n, episodeTitle: ep.title };
+  const fields = { seriesId: parent.id, episode: n, episodeTitle: ep.title, mode: (parent.mode || 'script') === 'source' ? 'adapted' : 'script' };
   if ((parent.mode || 'script') === 'source') fields.adapt = { minutes: Math.max(3, Math.min(10, Math.round(ep.minutes * 0.6))) };
   if (prev && (await exists(path.join(prev.dir, 'look.json')))) {
     fields.preset = { voice: prev.voice, formats: prev.formats, from: prev.id };
@@ -1741,7 +1865,7 @@ async function handleMessage(data) {
       const sections = (await readJson(path.join(job.dir, 'sections.json'))).sections;
       const partText = await episodeText(job.dir, sections, picked.flatMap((e) => e.sections));
       const mins = picked.reduce((x, e) => x + e.minutes, 0);
-      return jobFromText(partText, { needSample: true, fromLong: job.id },
+      return jobFromText(partText, { needSample: true, fromLong: job.id, mode: job.mode === 'source' ? 'adapted' : 'script' },
         `📄 Making episode${picked.length > 1 ? `s ${picked[0].n}-${picked[picked.length - 1].n}` : ` ${picked[0].n}`} (about ${fmtMin(mins)}) as one video…`);
     }
     if ((job.choice.kind === 'storyboard' || job.choice.kind === 'sample') && text.trim().length > 2) {
@@ -1791,8 +1915,16 @@ export async function recover() {
       if (job && BUSY.has(job.state)) {
         job.failedFrom = job.state;
         job.state = 'FAILED';
+        job.autoResumes = (job.autoResumes || 0) + 1;
         await saveJob(job);
-        await wa.sendText('The bot restarted while working. Send `retry` to continue.').catch(() => {});
+        if (job.lastStep && job.autoResumes <= 2) { // continue by itself; finished work is cached
+          await wa.sendText(`🔄 The bot restarted while working (${job.failedFrom.toLowerCase()}). Continuing where it stopped…`).catch(() => {});
+          later(() => runStep(job, job.lastStep.name, job.lastStep.arg));
+        } else {
+          await wa.sendText('The bot restarted while working. Send `retry` to continue.').catch(() => {});
+        }
+      } else if (job?.state === 'FAILED' && job.limitWait && job.lastStep) {
+        scheduleLimitRetry(job.id); // a usage-limit pause survives restarts
       }
     });
   }
@@ -1800,6 +1932,7 @@ export async function recover() {
 
 function fmt(sec) {
   const s = Math.round(sec);
+  if (s >= 3600) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 }
 

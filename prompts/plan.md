@@ -2,9 +2,11 @@
 
 You are in a job folder containing:
 - `{{SOURCE}}`: the original script file (PDF, DOCX or TXT) the user sent.
-- `script.txt`: text extracted from it. Urdu PDFs often extract badly (reversed or broken letters, missing spaces). If `script.txt` is empty, garbled or looks incomplete, Read `{{SOURCE}}` directly (you can read PDF pages) and work from that.
+- `{{TEXT_FILE}}`: the text to plan. Urdu PDFs often extract badly (reversed or broken letters, missing spaces). If it is empty, garbled or looks incomplete, Read `{{SOURCE}}` directly (you can read PDF pages) and work from the matching part.
 
-Write a single file `plan.json` that follows this schema:
+{{PART_NOTE}}
+
+Write a single file `{{PLAN_FILE}}` that follows this schema:
 
 {{SCHEMA}}
 
@@ -27,4 +29,4 @@ Rules:
 {{HOOK_RULE}}
 10. The title must make people want to watch: a clear, curious, accurate promise of what they will learn (max 60 characters), never clickbait or exaggeration.
 
-Write only `plan.json`. Do not create any other file. When finished, reply with just: DONE
+Write only `{{PLAN_FILE}}`. Do not create any other file. When finished, reply with just: DONE

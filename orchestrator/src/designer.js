@@ -82,10 +82,14 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
   const byId = new Map(props.scenes.map((s) => [s.id, s]));
   const keyOf = (s) => designKey(s, s.visual, look, formats);
 
-  const todo = [];
+  let todo = [];
   for (const s of plan.scenes) {
     if (force[s.id] || index[s.id] !== keyOf(s) || !(await exists(path.join(scDir, `${s.id}.html`)))) todo.push(s);
   }
+  // optional cap on how many scenes Claude designs per video (DESIGN_BUDGET); the rest use the simple style
+  const budget = Number(process.env.DESIGN_BUDGET || 0);
+  const designedAlready = plan.scenes.filter((s) => index[s.id]).length;
+  if (budget > 0 && designedAlready + todo.length > budget) todo = todo.slice(0, Math.max(0, budget - designedAlready));
   const fps = props.fps || 30;
   const formatNote = formats.length > 1
     ? ' Design for the long 16:9 layout and add `.portrait .sc …` CSS rules so the same scene also works in the 9:16 Short.'

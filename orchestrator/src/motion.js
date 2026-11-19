@@ -9,7 +9,7 @@ import { ROOT, cfg } from './config.js';
 import { compositionHtml } from './compose.js';
 import { localFontsCss, ensureCaptionFonts } from './fonts.js';
 import { buildAss } from './captions.js';
-import { finishVideo } from './finish.js';
+import { finishVideo, splitAt, highlights } from './finish.js';
 import { basicDesign } from './scenes-basic.js';
 import { progressLayer } from './overlay.js';
 import { run, exists, audioDuration } from './util.js';
@@ -304,7 +304,7 @@ async function hfRender(dir, out, { draft, fps, onPct }) {
  * ONE encode (progress layer + subtitles + mixed audio with two-pass loudness).
  * draft: quick low-quality render (demos). Returns { full, preview, hd, qc }.
  */
-export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, events = [], name = format, draft = false }) {
+export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, events = [], name = format, draft = false, partMinutes = 0 }) {
   const fps = draft ? 24 : (props.fps || 30);
   const work = path.join(job.dir, 'render', `${name}`);
   const clipDir = path.join(job.dir, 'clips', format);
@@ -375,12 +375,19 @@ export async function renderProject(job, format, { props, settings, designs = {}
     fontsDir = await ensureCaptionFonts();
   }
   const cutSounds = sfx ? timed.slice(1).map((s) => ({ file: sfx, t: Math.max(0, s.offset - 0.35), vol: 0.3 })) : [];
-  await finishVideo({ chunks: clips, out: full, work, progress, assFile, fontsDir, music, volume: settings.music?.volume || 'low', events: [...cutSounds, ...events] });
+  // over YouTube's limit: cut points at scene starts, each part at most partMinutes long
+  const cuts = [];
+  if (partMinutes > 0) {
+    let last = 0;
+    for (const s of timed) if (s.offset - last > partMinutes * 60) { const prev = timed.filter((x) => x.offset < s.offset).pop(); cuts.push(prev.offset); last = prev.offset; }
+  }
+  await finishVideo({ chunks: clips, out: full, work, progress, assFile, fontsDir, music, volume: settings.music?.volume || 'low', events: [...cutSounds, ...events], keyframes: cuts });
   onPercent?.(99);
   const qc = await checkVideo(full);
   if (!draft) await recordRenderSpeed(totalFrames / (props.fps || 30), (Date.now() - t0) / 1000);
 
   const out = { ...(await makePreview(full, format, job.dir, name)), qc };
+  if (cuts.length) out.parts = await splitAt(full, cuts, path.join(job.dir, name));
   if (format === 'long' || !(await exists(path.join(job.dir, 'frame.png')))) {
     await run('ffmpeg', ['-y', '-ss', '1.2', '-i', full, '-frames:v', '1', path.join(job.dir, 'frame.png')], { allowFail: true });
   }
@@ -393,6 +400,11 @@ export async function renderProject(job, format, { props, settings, designs = {}
 /** WhatsApp preview: the full-HD file itself (sent as a document) unless it is very large. */
 export async function makePreview(full, format, dir, name = format) {
   const preview = path.join(dir, `${name}-preview.mp4`);
+  const dur = await audioDuration(full).catch(() => 0);
+  if (dur > 20 * 60) { // long videos: a highlights preview (start, middle, end) instead of the whole file
+    await highlights(full, preview, dur);
+    return { full, preview, hd: false, highlights: true };
+  }
   const size = (await fs.stat(full)).size;
   if (size <= cfg.render.maxHdPreviewMb * 1024 * 1024) {
     await fs.copyFile(full, preview);

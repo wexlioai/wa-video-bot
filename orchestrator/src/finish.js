@@ -77,7 +77,7 @@ async function measureLoudness(wav) {
  * chunks → out. progress: result of progressLayer() or null. assFile: subtitles or null.
  * fontsDir: folder with the subtitle fonts. events: sound effects [{file, t, vol}].
  */
-export async function finishVideo({ chunks, out, work, progress, assFile, fontsDir, music, volume, events }) {
+export async function finishVideo({ chunks, out, work, progress, assFile, fontsDir, music, volume, events, keyframes = [] }) {
   await fs.mkdir(work, { recursive: true });
   const joined = path.join(work, 'joined.mp4');
   await joinChunks(chunks, joined, work);
@@ -106,8 +106,40 @@ export async function finishVideo({ chunks, out, work, progress, assFile, fontsD
   parts.push(`[1:a]${loud},aresample=48000[aout]`);
   if (v === '[0:v]') parts.push('[0:v]null[vfinal]'); else parts.push(`${v}null[vfinal]`);
   args.push('-filter_complex', parts.join(';'), '-map', '[vfinal]', '-map', '[aout]',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', path.resolve(out));
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p',
+    ...(keyframes.length ? ['-force_key_frames', keyframes.map((k) => k.toFixed(3)).join(',')] : []), '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', path.resolve(out));
   await run('ffmpeg', args, { cwd: work, timeoutMs: 6 * 60 * 60_000 });
   await fs.rm(joined, { force: true });
   await fs.rm(wav, { force: true });
+}
+
+/** Cut a finished video into parts at the given times (keyframes were forced there, so no re-encode). */
+export async function splitAt(file, times, outBase) {
+  const bounds = [0, ...times];
+  const parts = [];
+  for (let i = 0; i < bounds.length; i++) {
+    const out = `${outBase}-part${i + 1}.mp4`;
+    const args = ['-y', '-ss', bounds[i].toFixed(3), '-i', file];
+    if (i + 1 < bounds.length) args.push('-t', (bounds[i + 1] - bounds[i]).toFixed(3));
+    args.push('-c', 'copy', '-movflags', '+faststart', out);
+    await run('ffmpeg', args, { timeoutMs: 6 * 60 * 60_000 });
+    parts.push(out);
+  }
+  return parts;
+}
+
+/** A short highlights preview for long videos: three 40-second excerpts (start, middle, end). */
+export async function highlights(file, out, duration) {
+  const pts = [Math.min(30, duration * 0.05), duration * 0.5, Math.max(0, duration - 60)];
+  const tmp = [];
+  for (const [i, t] of pts.entries()) {
+    const f = `${out}.h${i}.mp4`;
+    await run('ffmpeg', ['-y', '-ss', t.toFixed(2), '-i', file, '-t', '40', '-vf', 'scale=-2:720', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-c:a', 'aac', '-b:a', '128k', f], { timeoutMs: 30 * 60_000 });
+    tmp.push(f);
+  }
+  const list = `${out}.txt`;
+  await fs.writeFile(list, tmp.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out], { timeoutMs: 30 * 60_000 });
+  for (const f of [...tmp, list]) await fs.rm(f, { force: true });
+  return out;
 }
