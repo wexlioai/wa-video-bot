@@ -180,15 +180,8 @@ async function onChoice(job, option) {
       job.thumbChosen = true;
       await saveJob(job);
       return runStep(job, 'publish');
-    case 'singleLen': {
-      if (v === 'full') {
-        job.state = 'DONE';
-        await saveJob(job);
-        const full = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
-        return jobFromText(full, { needSample: true, fromLong: job.id }, '📖 Making one video with every word. Planning it…');
-      }
-      return runStep(job, 'condense', { minutes: Number(v) });
-    }
+    case 'singleLen':
+      return singleChosen(job, v);
     case 'sample': {
       if (v === 'go' || v === 'all') {
         if (v === 'all') { const parent = await seriesOf(job); if (parent) { parent.series.auto = true; await saveJob(parent); } }
@@ -209,6 +202,7 @@ async function onChoice(job, option) {
       if (v === 'episodes') return runStep(job, 'outlineSeries');
       if (v === 'series') { job.state = 'DONE'; await saveJob(job); return startEpisode(job, 1); }
       if (v === 'single') return askSingleLength(job);
+      if (v === 'full' || String(v).startsWith('len:')) return singleChosen(job, v);
       job.choice = { kind: 'part', options: [] };
       job.state = 'AWAIT_CHOICE';
       await saveJob(job);
@@ -862,14 +856,20 @@ const steps = {
     const text = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
     const lang = detectLanguage(text);
     const m = measure(text, lang);
-    await writeSections(job.dir, text, lang); // local, no Claude
+    const sections = await writeSections(job.dir, text, lang); // local, no Claude
     job.language = lang;
     job.long = m;
     await saveJob(job);
-    const all = await estimate(m.minutes);
+    // estimates before anything expensive: episodes from the sections, single video from the length ranges
+    const epCount = sections.length;
+    const epMin = m.minutes / Math.max(1, epCount);
+    const perEp = await estimate(epMin);
+    const ranges = singleRanges(m.minutes);
     await wa.sendText([
       `📚 This is a long text: about ${m.pages.toLocaleString('en-US')} pages, ${m.words.toLocaleString('en-US')} words, *${fmtMin(m.minutes)}* if every word is read aloud.`,
-      `Reading every word would take about *${fmtHours(all.renderHours)}* of rendering on this PC and about *${all.voiceCredits.toLocaleString('en-US')} voice credits*.`,
+      `📺 *As episodes* (every word read): about *${epCount} episodes* of about *${fmtMin(epMin)}* each, about ${fmtHours(perEp.renderHours)} of rendering per episode.`,
+      `🎬 *As one single video*: you choose the length (${ranges.map((r) => r.label).join(', ')}). The video covers the whole text, condensed to that length.`,
+      '_These are estimates; the final number and length of the videos depend on the content._',
     ].join('\n\n'));
     const wish = job.longWish;
     if (wish?.kind === 'episodes') {
@@ -883,17 +883,17 @@ const steps = {
         later(() => jobFromText(text, { needSample: true, fromLong: job.id }, '📖 One video with every word, as you asked. Planning it…'));
         return null;
       }
-      if (wish.full) await wa.sendText(`📖 Every word would be ${fmtMin(m.minutes)} in one video, which is too long for one video, so I will make a summary instead.`);
+      if (wish.full) await wa.sendText(`📖 Every word would be ${fmtMin(m.minutes)} in one video, which is too long for one video, so I will make a condensed version instead.`);
       if (wish.minutes) {
-        const minutes = Math.max(2, Math.min(30, wish.minutes));
-        await wa.sendText(`🎯 One single video of about ${minutes} minutes, as you asked. It will keep the key ideas, facts and best lines of the whole text.`);
+        const minutes = Math.max(2, Math.min(SINGLE_MAX, wish.minutes));
+        await wa.sendText(`🎬 One single video of about ${minutes} minutes, as you asked. It covers the key ideas, facts and best lines of the whole text.`);
         return steps.condense(job, { minutes });
       }
       return askSingleLength(job);
     }
-    return ask(job, 'longKind', 'Do you want episodes or one single video?', [
-      { label: '📺 Episodes (a series, every word read)', value: 'episodes' },
-      { label: '🎬 One single video', value: 'single' },
+    return ask(job, 'longKind', 'What should I make?', [
+      { label: `📺 Episodes: ~${epCount} × ~${fmtMin(epMin)} (every word)`, value: 'episodes' },
+      ...ranges.map((r) => ({ label: `🎬 One video, ${r.label}`, value: r.value })),
       { label: '🗑 Cancel', value: 'cancel' },
     ]);
   },
@@ -1184,18 +1184,39 @@ const HOOK_RULE = `9. **Hook.** Start with ONE extra scene (id "s00", section "h
 // a single video with every word: only up to this many minutes (planning and rendering limits)
 const FULL_SINGLE_MAX = 45;
 
-/** "How long should the single video be?" (every-word option only when that is a sane length). */
-async function askSingleLength(job) {
-  const opts = [
-    { label: '🎯 Short summary (about 5 min)', value: 5 },
-    { label: '🎯 Summary (about 10 min)', value: 10 },
-    { label: '🎯 Detailed summary (about 20 min)', value: 20 },
-  ];
-  if (job.long?.minutes <= FULL_SINGLE_MAX) {
-    const est = await estimate(job.long.minutes);
-    opts.push({ label: `📖 Every word in one video (${fmtMin(job.long.minutes)}, ~${fmtHours(est.renderHours)} rendering)`, value: 'full' });
+// single video lengths offered for a long text (only ranges shorter than the text itself)
+const SINGLE_MAX = 60;
+const RANGES = [
+  { label: '1-5 min', min: 1, max: 5, target: 4 },
+  { label: '5-10 min', min: 5, max: 10, target: 8 },
+  { label: '10-20 min', min: 10, max: 20, target: 15 },
+  { label: '20-30 min', min: 20, max: 30, target: 25 },
+  { label: '30-45 min', min: 30, max: 45, target: 38 },
+  { label: 'about 1 hour', min: 50, max: 60, target: 55 },
+];
+function singleRanges(totalMinutes) {
+  const list = RANGES.filter((r) => r.min < totalMinutes * 0.7).map((r) => ({ ...r, value: `len:${r.target}` }));
+  if (totalMinutes <= FULL_SINGLE_MAX) list.push({ label: `every word (${fmtMin(totalMinutes)})`, value: 'full' });
+  return list;
+}
+
+/** A single-video length was picked: every word, or a condensed script of about N minutes. */
+async function singleChosen(job, v) {
+  if (v === 'full') {
+    job.state = 'DONE';
+    await saveJob(job);
+    const full = await fs.readFile(path.join(job.dir, 'script.txt'), 'utf8');
+    return jobFromText(full, { needSample: true, fromLong: job.id }, '📖 Making one video with every word. Planning it…');
   }
-  return ask(job, 'singleLen', 'How long should the single video be? (A summary keeps the key ideas, facts and best lines. You can also type a length, e.g. 15 min.)', opts);
+  const minutes = Math.max(2, Math.min(SINGLE_MAX, Number(String(v).replace('len:', '')) || 10));
+  return runStep(job, 'condense', { minutes });
+}
+
+/** "How long should the single video be?" */
+async function askSingleLength(job) {
+  const ranges = singleRanges(job.long?.minutes || 60);
+  return ask(job, 'singleLen', 'How long should the single video be? (It covers the whole text, condensed to that length. You can also type a length, e.g. 15 min.)',
+    ranges.map((r) => ({ label: `🎬 ${r.label}`, value: r.value })));
 }
 
 /** What the person already asked for with a long text ("one single video, 10 min", "make episodes"). */
@@ -1578,7 +1599,7 @@ async function handleMessage(data) {
         job.longWish = wish;
         await saveJob(job);
         if ((asked === 'singleLen' && wish.minutes) || (wish.kind === 'single' && wish.minutes)) {
-          return runStep(job, 'condense', { minutes: Math.max(2, Math.min(30, wish.minutes || 10)) });
+          return runStep(job, 'condense', { minutes: Math.max(2, Math.min(SINGLE_MAX, wish.minutes || 10)) });
         }
         if (wish.kind === 'episodes') return runStep(job, 'outlineSeries');
         return askSingleLength(job);
