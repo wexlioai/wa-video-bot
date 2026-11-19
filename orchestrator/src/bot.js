@@ -3,7 +3,7 @@ import path from 'node:path';
 import { cfg, ROOT } from './config.js';
 import * as wa from './whatsapp.js';
 import { createJob, currentJob, saveJob, loadPlan, userDir, migrateSingleUser, loadJob, setCurrentJob } from './jobs.js';
-import { measure, writeSections, splitSections, loadOutline, episodeText, estimate, fmtHours, LONG_MINUTES, SAMPLE_MINUTES } from './longform.js';
+import { measure, writeSections, splitSections, loadOutline, episodeText, estimate, fmtHours, LONG_MINUTES, SAMPLE_MINUTES, EP_MIN } from './longform.js';
 import { extractText, detectLanguage } from './extract.js';
 import { askClaude, ClaudeLimitError } from './claude.js';
 import { validatePlan } from './plan.js';
@@ -905,12 +905,12 @@ const steps = {
     job.long = m;
     await saveJob(job);
     // estimates before anything expensive: episodes from the sections, single video from the length ranges
-    const epCount = sections.length;
-    const epMin = m.minutes / Math.max(1, epCount);
+    const epCount = Math.max(2, Math.round(m.minutes / EP_MIN()));
+    const epMin = m.minutes / epCount;
     const perEp = await estimate(epMin);
     const source = (job.mode || 'source') === 'source';
     const ranges = singleRanges(m.minutes, job.mode || 'source');
-    const epShow = source ? Math.min(epMin, 8) : epMin; // new scripts per episode aim at about 8 minutes
+    const epShow = source ? Math.min(epMin, EP_MIN()) : epMin; // new scripts per episode aim at about EP_MIN minutes
     const perEpShow = source ? await estimate(epShow) : perEp;
     await wa.sendText([
       `📚 This is a long text: about ${m.pages.toLocaleString('en-US')} pages, ${m.words.toLocaleString('en-US')} words, *${fmtMin(m.minutes)}* if every word is read aloud.`,
@@ -958,7 +958,7 @@ const steps = {
     const p = await startProgress('📺 Planning the episodes…');
     let outline;
     try {
-      await askClaude(job.dir, 'outline', {}, { maxTurns: 15 }).catch((e) => { if (e instanceof ClaudeLimitError) throw e; console.log(`${ts()} outline failed: ${e.message}`); });
+      await askClaude(job.dir, 'outline', { EP_MIN: EP_MIN(), EP_LO: Math.round(EP_MIN() * 0.7), EP_HI: Math.round(EP_MIN() * 1.3) }, { maxTurns: 15 }).catch((e) => { if (e instanceof ClaudeLimitError) throw e; console.log(`${ts()} outline failed: ${e.message}`); });
       outline = await loadOutline(job.dir, sections);
     } finally {
       await p.done();
@@ -1293,7 +1293,7 @@ async function modeEstimates(m) {
     script = `a video of about *${fmtMin(video)}*, about ${fmtHours(r.renderHours)} of rendering.`;
     scriptShort = `~${fmtMin(video)} video`;
   } else {
-    const eps = Math.max(2, Math.round(m.words / 1400));
+    const eps = Math.max(2, Math.round(m.minutes / EP_MIN()));
     const epMin = m.minutes / eps;
     const re = await estimate(epMin);
     script = `*${fmtMin(m.minutes)}* in total: about *${eps} episodes* of ~${fmtMin(epMin)} each (about ${fmtHours(re.renderHours)} rendering per episode)${m.minutes <= FULL_SINGLE_MAX ? `, or one video of ${fmtMin(video)}` : ''}.`;
@@ -1305,7 +1305,7 @@ async function modeEstimates(m) {
   const rLo = await estimate(lo.target);
   const rHi = await estimate(hi.target);
   const top = hi.max >= 60 ? '1 hour' : `${hi.max} min`;
-  const source = `one video of *${lo.min} min to ${top}* (you choose), about ${fmtHours(rLo.renderHours)} to ${fmtHours(rHi.renderHours)} of rendering${long ? `; or a series of about ${Math.max(2, Math.round(m.words / 1400))} episodes of ~8 min, each with its own new script` : ''}.`;
+  const source = `one video of *${lo.min} min to ${top}* (you choose), about ${fmtHours(rLo.renderHours)} to ${fmtHours(rHi.renderHours)} of rendering${long ? `; or a series of about ${Math.max(2, Math.round(m.minutes / EP_MIN()))} episodes of ~${EP_MIN()} min, each with its own new script` : ''}.`;
   return { script, scriptShort, source, sourceShort: `you pick ${lo.min} min to ${top}` };
 }
 
@@ -1513,7 +1513,7 @@ async function startEpisode(parent, n) {
   const prevId = parent.series.episodes[n - 2]?.jobId;
   const prev = prevId ? await loadJob(prevId) : null;
   const fields = { seriesId: parent.id, episode: n, episodeTitle: ep.title, mode: (parent.mode || 'script') === 'source' ? 'adapted' : 'script' };
-  if ((parent.mode || 'script') === 'source') fields.adapt = { minutes: Math.max(3, Math.min(10, Math.round(ep.minutes * 0.6))) };
+  if ((parent.mode || 'script') === 'source') fields.adapt = { minutes: Math.max(3, Math.min(EP_MIN(), Math.round(ep.minutes))) };
   if (prev && (await exists(path.join(prev.dir, 'look.json')))) {
     fields.preset = { voice: prev.voice, formats: prev.formats, from: prev.id };
     fields.sampleOk = true;

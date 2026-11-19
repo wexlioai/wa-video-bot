@@ -8,7 +8,9 @@ import { readJson, writeJson } from './util.js';
 const WPM = { en: 150, ur: 130 }; // narration speed, words per minute
 export const LONG_MINUTES = () => Number(process.env.LONG_MINUTES || 15); // above this: long-content mode
 export const SAMPLE_MINUTES = () => Number(process.env.SAMPLE_MINUTES || 4); // above this: 10-second sample first
-const TARGET_WORDS = 1400; // ≈ 9-10 minutes per episode
+const TARGET_WORDS = 1400; // section size when the text has no headings (≈ 9-10 minutes); episodes group sections
+/** Target episode length in minutes (EPISODE_MINUTES, default 30). */
+export const EP_MIN = () => Math.max(5, Math.min(120, Number(process.env.EPISODE_MINUTES || 30)));
 const MIN_WORDS = 450;
 const MAX_WORDS = 2200;
 
@@ -92,8 +94,20 @@ export async function writeSections(jobDir, text, lang) {
 }
 
 /** Fallback outline: one episode per section. */
+/** Group neighbouring sections into episodes of about EP_MIN minutes (used when Claude's outline is missing). */
 export function defaultOutline(sections, title = 'Series') {
-  return { title, episodes: sections.map((s) => ({ n: s.n, title: s.heading, sections: [s.n] })) };
+  const target = EP_MIN();
+  const episodes = [];
+  let cur = null;
+  for (const s of sections) {
+    if (!cur || (cur.minutes > 0 && cur.minutes + s.minutes > target * 1.25)) {
+      cur = { n: episodes.length + 1, title: s.heading || `Episode ${episodes.length + 1}`, sections: [], minutes: 0 };
+      episodes.push(cur);
+    }
+    cur.sections.push(s.n);
+    cur.minutes += s.minutes || 0;
+  }
+  return { title, episodes: episodes.map(({ minutes, ...e }) => e) };
 }
 
 /** Validate outline.json from Claude against the sections. */
