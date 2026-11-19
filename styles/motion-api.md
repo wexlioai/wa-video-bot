@@ -35,6 +35,19 @@ colour, fonts, the voice track and the captions itself. **Do not draw captions o
 | `$('.x')`, `$$('.x')` | querySelector / querySelectorAll inside the scene. |
 | `RTL`, `LANG` | `true` / `'ur'` for Urdu (right-to-left). |
 
+## Shared motion helpers (`M`)
+Every scene can use `M` (from motion-lib.js); prefer them to hand-written tweens for common moves:
+`M.rise(tl, '.ttl .w', at)` masked rise · `M.slide(tl, el, at, {from:'left'})` · `M.pop(tl, el, at)` ·
+`M.draw(tl, 'path', at)` ink a stroke · `M.write(tl, el, at, {rtl})` write-on · `M.underline(tl, el, at)` marker sweep ·
+`M.count(tl, $('#n'), at, 37.8, {decimals:1, suffix:'×'})` · `M.stamp(tl, el, at)` · `M.camera(tl, cam, at, {scale:1.8, x:-300})` ·
+`M.drift(tl, el, at, D)` slow hold motion · `M.pulse(tl, ring, at)`.
+Look up elements with `$()` / `$$()` (never `document.getElementById`): several scenes share one page.
+
+## Render cost
+Frames are captured one by one, so cost per frame matters: no `backdrop-filter`, no blur above 6 px, avoid
+animating `filter` or big box-shadows; prefer transforms and opacity; keep SVG patterns static (move the
+camera instead of scaling a full-screen pattern).
+
 ## Rules (renders break or look wrong if these are ignored)
 1. Deterministic: no `Math.random`, `Date`, `setTimeout`, `setInterval`, `requestAnimationFrame`, `fetch`, infinite `repeat: -1`, or `yoyo` without a finite repeat. The renderer seeks the timeline frame by frame.
 2. Every tween has an explicit position and ends at or before `D`. Long "breathing" moves (slow drift, float) may run until `D`.

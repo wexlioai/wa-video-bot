@@ -19,6 +19,14 @@ Formats to support: {{FORMATS}}.{{FORMAT_NOTE}}
 
 {{EXTRA}}
 
+## Reuse before you create (important: it saves time and keeps quality)
+`_ref/library/index.json` lists scene components that already passed review (with a thumbnail you can look at). For every scene:
+1. Pick the component that fits best (same section/kind and style first). If one fits, copy it into `scenes/<id>.html` and adapt it: texts, `when()` words, layout and timings for this narration. Improve it where this situation needs it, but keep what works.
+2. Only when nothing fits, write a new scene from scratch.
+3. The FIRST line of every scene file says where it came from:
+   `<!-- component: <component id> | adapted -->` or `<!-- component: new | short name | kind (e.g. facts-map, holding-document, case-card, sources-shelf, concept-term, timeline, list, number, quote, comparison, hook) | one-line description of the visual idea -->`
+Use the shared motion helpers (`M.rise`, `M.draw`, `M.stamp`, `M.count`, `M.camera`… see motion-api.md) instead of rewriting common moves.
+
 For every scene in `design-input.json`, write `scenes/<id>.html` following motion-api.md.
 
 How to design each scene:

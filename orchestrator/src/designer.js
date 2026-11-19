@@ -12,6 +12,7 @@ import { prepareRefs, bannedIssues, styleLibrary, rulesText } from './look.js';
 import { sceneHtml, esc } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
 import { expandProps } from './props.js';
+import { prepareLibraryRefs, harvest } from './library.js';
 import { ROOT } from './config.js';
 
 const BATCH = 4; // scenes per Claude call
@@ -90,6 +91,9 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
     ? ' Design for the long 16:9 layout and add `.portrait .sc …` CSS rules so the same scene also works in the 9:16 Short.'
     : formats[0] === 'short' ? ' This is a 9:16 Short only (1080×1920, PORTRAIT is true).' : ' This is a 16:9 video only (1920×1080).';
 
+  // reuse: the closest library components go to _ref/library; a well-stocked style can use the faster model
+  const lib = todo.length ? await prepareLibraryRefs(job.dir, { niche: look.niche || 'general', style: look.style }) : { sameStyle: 0 };
+  const model = lib.sameStyle >= 6 ? (process.env.DESIGN_MODEL_ADAPT || 'sonnet') : (process.env.DESIGN_MODEL || undefined);
   let done = 0;
   const failed = new Map();
   const runBatch = async (scenes, extraText) => {
@@ -113,7 +117,7 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
         FORMATS: formats.map((f) => (f === 'short' ? 'Short 9:16 (1080×1920)' : 'long 16:9 (1920×1080)')).join(' and '),
         FORMAT_NOTE: formatNote,
         EXTRA: [extra, extraText].filter(Boolean).join('\n\n'),
-      }, { maxTurns: 45 });
+      }, { maxTurns: 45, model });
     } catch (e) {
       if (e instanceof ClaudeLimitError) throw e;
       for (const s of scenes) failed.set(s.id, [`design call failed: ${e.message.slice(0, 200)}`]);
@@ -403,5 +407,10 @@ export async function reviewScenes(job, { plan, props, look, settings, formats, 
     }
   }
   await writeJson(path.join(job.dir, 'critic', 'review.json'), review).catch(() => {});
-  return { designs, review, fixed: [...fixed], weak };
+  // keep what passed review in the component library (new components, improved versions)
+  const scores = Object.fromEntries((review.scenes || []).map((r) => [r.id, Number(r.score)]));
+  const thumbs = Object.fromEntries(Object.keys(scores).map((id) => [id, path.join(job.dir, 'critic', `${id}-78.jpg`)]));
+  const lib = await harvest(job, { plan, look, scores, thumbs }).catch((e) => { console.log(`${ts()} library harvest failed: ${e.message}`); return null; });
+  if (lib) console.log(`${ts()} [${job.id}] library: +${lib.added.length} new, ${lib.improved.length} improved, ${lib.used.length} reused`);
+  return { designs, review, fixed: [...fixed], weak, library: lib };
 }
