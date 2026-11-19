@@ -836,16 +836,27 @@ const steps = {
     return askApproval(job);
   },
 
-  // A ~10-second sample (first scene or two) in the chosen look and voice, before the whole video.
+  // A short sample (the opening plus one typical scene from the middle) in the chosen look and voice, before the whole video.
   async sample(job, plan, settings) {
     const look = await loadLook(job.dir);
-    const p = await startProgress('🎬 Making a 10-second sample first, so you can check the look and voice before the whole video…');
+    const p = await startProgress('🎬 Making a short sample first (the opening and one typical scene), so you can check the look and voice before the whole video…');
     let out;
     let seconds;
     try {
       const scenes = [];
       let chars = 0;
       for (const sc of plan.scenes) { scenes.push(sc); chars += sc.narration.length; if (chars >= 170 || scenes.length >= 2) break; }
+      // plus one representative scene from the middle (the most common kind not shown yet), so the demo
+      // shows how the body of the video looks, not only the opening
+      if (plan.scenes.length > 6) {
+        const shown = new Set(scenes.map((x) => x.kind));
+        const count = {};
+        for (const x of plan.scenes) if (x.kind && !shown.has(x.kind)) count[x.kind] = (count[x.kind] || 0) + 1;
+        const kind = Object.entries(count).sort((x, y) => y[1] - x[1])[0]?.[0];
+        const mid = plan.scenes.slice(Math.floor(plan.scenes.length * 0.3), Math.ceil(plan.scenes.length * 0.7));
+        const pick = (kind && mid.find((x) => x.kind === kind)) || mid[Math.floor(mid.length / 2)];
+        if (pick && !scenes.includes(pick)) scenes.push(pick);
+      }
       const sub = { ...plan, scenes };
       await buildProps(job, sub, null, { speed: settings.voice.speed });
       const props = await readJson(path.join(job.dir, 'props.json'));
