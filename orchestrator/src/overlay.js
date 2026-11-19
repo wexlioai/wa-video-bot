@@ -56,30 +56,30 @@ async function chipImages(dir, spans, { format, theme, lang }) {
 }
 
 /**
- * input → output with the overlay burned in (video re-encoded once, audio copied).
- * Returns false (and does nothing) when there is nothing useful to show.
+ * The progress layer as FFmpeg filter parts, for the single finishing encode.
+ * Returns null when there is nothing useful to show (fewer than 3 sections or under 40 s).
+ * use: inputs (extra image inputs) and chain(videoLabel, firstInputIndex) → { parts, out }.
  */
-export async function addProgressOverlay(input, output, { scenes, fps, format, theme, lang, workDir }) {
+export async function progressLayer({ scenes, fps, format, theme, lang, workDir }) {
   const { spans, total } = sectionSpans(scenes, fps);
-  if (spans.length < 3 || total < 40) return false;
+  if (spans.length < 3 || total < 40) return null;
   await fs.mkdir(workDir, { recursive: true });
   const chips = await chipImages(workDir, spans, { format, theme, lang });
-  const portrait = format === 'short';
-  const y = portrait ? 160 : 18;
+  const y = format === 'short' ? 160 : 18;
   const hex = (c) => `0x${String(c).replace('#', '')}`;
-  const args = ['-y', '-i', input];
-  for (const c of chips) args.push('-i', c);
-  const parts = [];
-  let cur = '[0:v]';
-  chips.forEach((_, i) => {
-    const s = spans[i];
-    const out = `[v${i}]`;
-    parts.push(`${cur}[${i + 1}:v]overlay=x=(W-w)/2:y=${y}:enable='between(t,${s.start.toFixed(2)},${s.end.toFixed(2)})'${out}`);
-    cur = out;
-  });
-  // thin progress line on the very top edge
-  parts.push(`${cur}drawbox=x=0:y=0:w=iw:h=6:color=${hex(theme.text)}@0.18:t=fill,drawbox=x=0:y=0:w='iw*t/${total.toFixed(2)}':h=6:color=${hex(theme.accent)}@0.95:t=fill[vout]`);
-  args.push('-filter_complex', parts.join(';'), '-map', '[vout]', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p', '-c:a', 'copy', output);
-  await run('ffmpeg', args, { timeoutMs: 60 * 60_000 });
-  return true;
+  return {
+    inputs: chips,
+    chain(inLabel, first) {
+      const parts = [];
+      let cur = inLabel;
+      chips.forEach((_, i) => {
+        const s = spans[i];
+        const out = `[pg${i}]`;
+        parts.push(`${cur}[${first + i}:v]overlay=x=(W-w)/2:y=${y}:enable='between(t,${s.start.toFixed(2)},${s.end.toFixed(2)})'${out}`);
+        cur = out;
+      });
+      parts.push(`${cur}drawbox=x=0:y=0:w=iw:h=6:color=${hex(theme.text)}@0.18:t=fill,drawbox=x=0:y=0:w='iw*t/${total.toFixed(2)}':h=6:color=${hex(theme.accent)}@0.95:t=fill[pgout]`);
+      return { parts, out: '[pgout]' };
+    },
+  };
 }

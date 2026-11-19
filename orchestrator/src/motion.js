@@ -6,10 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { ROOT, cfg } from './config.js';
-import { sceneHtml } from './compose.js';
+import { compositionHtml } from './compose.js';
+import { localFontsCss, ensureCaptionFonts } from './fonts.js';
+import { buildAss } from './captions.js';
+import { finishVideo } from './finish.js';
 import { basicDesign } from './scenes-basic.js';
-import { mixSound } from './music.js';
-import { addProgressOverlay } from './overlay.js';
+import { progressLayer } from './overlay.js';
 import { run, exists, audioDuration } from './util.js';
 
 export const MOTION_DIR = path.join(ROOT, 'motion');
@@ -258,88 +260,131 @@ export async function motionEngine() {
 const readJsonSafe = (f) => fs.readFile(f, 'utf8').then(JSON.parse).catch(() => null);
 const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12);
 
+/** Group scenes into render chunks: a new chunk at each section change, at most 8 scenes or 90 s. */
+export function chunkScenes(scenes, fps) {
+  const chunks = [];
+  let cur = [];
+  let secs = 0;
+  for (const s of scenes) {
+    const d = s.durationInFrames / fps;
+    const newSection = cur.length && (s.section || '') !== (cur[cur.length - 1].section || '') && !cur[cur.length - 1].hook;
+    if (cur.length && (newSection || cur.length >= 8 || secs + d > 90)) { chunks.push(cur); cur = []; secs = 0; }
+    cur.push(s);
+    secs += d;
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
+/** Render statistics: seconds of rendering per second of video (learned from real renders). */
+const STATS_FILE = () => path.join(cfg.dataDir, 'render-stats.json');
+export async function recordRenderSpeed(videoSec, renderSec) {
+  if (!(videoSec > 1) || !(renderSec > 0)) return;
+  const st = await readJsonSafe(STATS_FILE()) || { ratio: null, samples: 0 };
+  const r = renderSec / videoSec;
+  st.ratio = st.ratio ? st.ratio * 0.7 + r * 0.3 : r; // moving average
+  st.samples = (st.samples || 0) + 1;
+  st.at = new Date().toISOString();
+  await fs.writeFile(STATS_FILE(), JSON.stringify(st, null, 2));
+}
+
+async function hfRender(dir, out, { draft, fps, onPct }) {
+  const base = ['render', '--output', out, '--quality', draft ? 'draft' : 'looks', '--fps', String(fps), '--workers', workers()];
+  let r = await hf([...base, '--video-frame-format', 'jpg'], { cwd: dir, allowFail: true, timeoutMs: 6 * 60 * 60_000, onData: onPct });
+  if (r.code !== 0 && /unknown|unrecognized|invalid/i.test(`${r.stderr}${r.stdout}`)) {
+    r = await hf(base, { cwd: dir, allowFail: true, timeoutMs: 6 * 60 * 60_000, onData: onPct }); // older HyperFrames
+  }
+  return r;
+}
+
 /**
- * props: output of render.buildProps (scenes with id, audio, durationInFrames, words, visual).
- * designs: optional { [sceneId]: {body, css, js, fonts} } from the motion designer; missing → basic style.
- * Returns { full, preview, hd } like renderVideo().
+ * props: output of render.buildProps (scenes with id, audio, durationInFrames, words, visual, section).
+ * designs: { [sceneId]: {body, css, js, fonts, families} }; missing → basic style.
+ * Scenes are rendered in chunks (one browser session per section), cached by content, then finished in
+ * ONE encode (progress layer + subtitles + mixed audio with two-pass loudness).
+ * draft: quick low-quality render (demos). Returns { full, preview, hd, qc }.
  */
-export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, name = format }) {
-  const fps = props.fps || 30;
-  const work = path.join(job.dir, 'render', format);
+export async function renderProject(job, format, { props, settings, designs = {}, onPercent, music = null, sfx = null, events = [], name = format, draft = false }) {
+  const fps = draft ? 24 : (props.fps || 30);
+  const work = path.join(job.dir, 'render', `${name}`);
   const clipDir = path.join(job.dir, 'clips', format);
   await fs.mkdir(clipDir, { recursive: true });
+  await fs.mkdir(work, { recursive: true });
   const gsap = await fs.readFile(gsapFile());
-  const total = props.scenes.reduce((a, s) => a + s.durationInFrames, 0);
   const look = await readJsonSafe(path.join(job.dir, 'look.json'));
-  let doneFrames = 0;
-  const clips = [];
+  const totalFrames = props.scenes.reduce((a, s) => a + s.durationInFrames, 0);
+  const t0 = Date.now();
 
-  for (const s of props.scenes) {
-    const duration = s.durationInFrames / fps;
-    const design = designs[s.id] || basicDesign(s.visual, { theme: props.theme, format, lang: props.language, words: s.words, look });
-    const audioName = s.audio ? `voice${path.extname(s.audio)}` : null;
-    const html = sceneHtml({ scene: { id: s.id, duration, words: s.words, audio: audioName, design }, format, lang: props.language, theme: props.theme, settings, motion: look?.motion });
-    const audioKey = s.audio ? path.basename(s.audio) : 'none'; // audio file names carry their content hash
-    const clip = path.join(clipDir, `${s.id}-${sha(`${html}|${audioKey}`)}.mp4`);
+  // absolute offsets
+  let acc = 0;
+  const timed = props.scenes.map((s) => { const o = acc; acc += s.durationInFrames / (props.fps || 30); return { ...s, offset: o, duration: s.durationInFrames / (props.fps || 30) }; });
+  const chunks = chunkScenes(timed, props.fps || 30);
+  const fontQueries = new Set();
+  const designOf = (s) => designs[s.id] || basicDesign(s.visual, { theme: props.theme, format, lang: props.language, words: s.words, look });
+  for (const s of timed) for (const q of [designOf(s).fonts || []].flat()) fontQueries.add(q);
+  if (props.language === 'ur') fontQueries.add('Noto Nastaliq Urdu:wght@400;700');
+
+  const clips = [];
+  let doneSec = 0;
+  for (const [ci, ch] of chunks.entries()) {
+    const start = ch[0].offset;
+    const scenes = ch.map((s) => ({ id: s.id, offset: s.offset - start, duration: s.duration, words: s.words, audio: s.audio ? `voice-${s.id}${path.extname(s.audio)}` : null, design: designOf(s) }));
+    const dir = path.join(work, `chunk-${String(ci).padStart(3, '0')}`);
+    await fs.mkdir(dir, { recursive: true });
+    const fontsCss = await localFontsCss([...fontQueries], dir);
+    const html = compositionHtml({ scenes, format, lang: props.language, theme: props.theme, settings, motion: look?.motion, fontsCss, captions: false, compId: 'chunk' });
+    const audioKey = ch.map((s) => (s.audio ? path.basename(s.audio) : 'none')).join(',');
+    const clip = path.join(clipDir, `chunk-${sha(`${html}|${audioKey}|${fps}|${draft}`)}.mp4`);
+    const chSec = ch.reduce((a, s) => a + s.duration, 0);
     if (!(await exists(clip))) {
-      const dir = path.join(work, s.id);
-      await fs.rm(dir, { recursive: true, force: true });
-      await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, 'index.html'), html);
       await fs.writeFile(path.join(dir, 'gsap.min.js'), gsap);
-      if (audioName) await fs.copyFile(path.join(job.dir, s.audio), path.join(dir, audioName));
+      await fs.copyFile(path.join(MOTION_DIR, 'motion-lib.js'), path.join(dir, 'motion-lib.js')).catch(() => {});
+      for (const s of ch) if (s.audio) await fs.copyFile(path.join(job.dir, s.audio), path.join(dir, `voice-${s.id}${path.extname(s.audio)}`));
       const tmp = path.join(dir, 'out.mp4');
-      const r = await hf(['render', '--output', tmp, '--quality', 'looks', '--fps', String(fps), '--workers', workers()], {
-        cwd: dir,
-        allowFail: true,
-        timeoutMs: 60 * 60_000,
-        onData: (d) => {
+      const r = await hfRender(dir, tmp, {
+        draft,
+        fps,
+        onPct: (d) => {
           const m = [...d.matchAll(/(\d{1,3}(?:\.\d+)?)\s?%/g)].pop();
-          if (m) onPercent?.(Math.min(97, Math.round(((doneFrames + (Number(m[1]) / 100) * s.durationInFrames) / total) * 97)));
+          if (m) onPercent?.(Math.min(94, Math.round(((doneSec + (Number(m[1]) / 100) * chSec) / (totalFrames / (props.fps || 30))) * 94)));
         },
       });
       if (r.code !== 0 || !(await exists(tmp))) {
-        throw new Error(`HyperFrames could not render scene ${s.id}: ${(r.stderr || r.stdout || '').trim().split('\n').slice(-8).join(' | ').slice(0, 900)}`);
+        throw new Error(`HyperFrames could not render scenes ${ch[0].id}-${ch[ch.length - 1].id}: ${(r.stderr || r.stdout || '').trim().split('\n').slice(-8).join(' | ').slice(0, 900)}`);
       }
       await fs.rename(tmp, clip);
+      await fs.rm(dir, { recursive: true, force: true });
     }
     clips.push(clip);
-    doneFrames += s.durationInFrames;
-    onPercent?.(Math.round((doneFrames / total) * 97));
+    doneSec += chSec;
+    onPercent?.(Math.round((doneSec / (totalFrames / (props.fps || 30))) * 94));
   }
 
-  // join: same codec settings for every clip, so the video stream is copied; audio re-encoded
-  // to avoid tiny gaps at the joins
+  // finishing pass: one encode
   const full = path.join(job.dir, `${name}.mp4`);
-  const list = path.join(work, 'clips.txt');
-  await fs.mkdir(work, { recursive: true });
-  await fs.writeFile(list, clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
-  // join, then mix music (ducked under the voice) + whooshes at the cuts, loudness to -14 LUFS
-  const joined = path.join(work, 'joined.mp4');
-  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', joined], { timeoutMs: 30 * 60_000 });
-  const cuts = [];
-  let acc = 0;
-  for (const s of props.scenes.slice(0, -1)) { acc += s.durationInFrames / fps; cuts.push(acc); }
-  // where-am-I overlay (progress line + sections); never fatal
-  let base = joined;
-  if (settings.progress?.show !== false) {
-    const withBar = path.join(work, 'joined-progress.mp4');
-    const ok = await addProgressOverlay(joined, withBar, { scenes: props.scenes, fps, format, theme: props.theme, lang: props.language, workDir: path.join(work, 'overlay') })
-      .catch((e) => { console.log(`progress overlay skipped: ${e.message.slice(0, 200)}`); return false; });
-    if (ok) base = withBar;
+  const progress = settings.progress?.show !== false && !draft
+    ? await progressLayer({ scenes: props.scenes, fps: props.fps || 30, format, theme: props.theme, lang: props.language, workDir: path.join(work, 'overlay') }).catch((e) => { console.log(`progress layer skipped: ${e.message.slice(0, 160)}`); return null; })
+    : null;
+  let assFile = null;
+  let fontsDir = null;
+  const ass = buildAss({ scenes: timed, format, settings, theme: props.theme, lang: props.language });
+  if (ass) {
+    assFile = path.join(work, 'captions.ass');
+    await fs.writeFile(assFile, ass);
+    fontsDir = await ensureCaptionFonts();
   }
-  await mixSound(base, full, { music, volume: settings.music?.volume || 'low', cuts, sfx });
-  await fs.rm(joined, { force: true });
-  await fs.rm(path.join(work, 'joined-progress.mp4'), { force: true });
+  const cutSounds = sfx ? timed.slice(1).map((s) => ({ file: sfx, t: Math.max(0, s.offset - 0.35), vol: 0.3 })) : [];
+  await finishVideo({ chunks: clips, out: full, work, progress, assFile, fontsDir, music, volume: settings.music?.volume || 'low', events: [...cutSounds, ...events] });
   onPercent?.(99);
   const qc = await checkVideo(full);
+  if (!draft) await recordRenderSpeed(totalFrames / (props.fps || 30), (Date.now() - t0) / 1000);
 
   const out = { ...(await makePreview(full, format, job.dir, name)), qc };
   if (format === 'long' || !(await exists(path.join(job.dir, 'frame.png')))) {
-    await run('ffmpeg', ['-y', '-ss', '1.2', '-i', clips[0], '-frames:v', '1', path.join(job.dir, 'frame.png')], { allowFail: true });
+    await run('ffmpeg', ['-y', '-ss', '1.2', '-i', full, '-frames:v', '1', path.join(job.dir, 'frame.png')], { allowFail: true });
   }
-  // old clips of scenes that changed are no longer needed (not after a partial sample render)
-  if (name !== format) return out;
+  if (name !== format) return out; // partial (demo) render: keep the full video's cache
   const keep = new Set(clips.map((c) => path.basename(c)));
   for (const f of await fs.readdir(clipDir)) if (!keep.has(f)) await fs.rm(path.join(clipDir, f), { force: true });
   return out;

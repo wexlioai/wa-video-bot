@@ -838,7 +838,7 @@ const steps = {
         const d = await designScenes(job, { plan: sub, props, look, formats: job.formats });
         const { music, sfx } = await ensureSound(job, settings, p);
         await p.update('🎬 Rendering the sample…', true);
-        out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx });
+        out = await renderProject(job, job.formats[0], { props, settings, designs: d.designs, name: 'sample', music, sfx, draft: true });
       } else {
         await p.update('🎬 Rendering the sample…', true);
         out = await renderVideo(job, job.formats[0], null, { name: 'sample' });

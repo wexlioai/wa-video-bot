@@ -123,8 +123,10 @@ export async function episodeText(jobDir, sections, nums) {
 
 /** Rough costs: render time from this machine's engine test, voice credits from experience (~1,000/min). */
 export async function estimate(minutes) {
+  // learned from real renders first, else the engine test, else a cautious guess
+  const stats = await readJson(path.join(cfg.dataDir, 'render-stats.json')).catch(() => null);
   const ok = await readJson(path.join(cfg.dataDir, 'engine-ok.json')).catch(() => null);
-  const ratio = ok?.seconds ? ok.renderSec / ok.seconds : 16;
+  const ratio = stats?.ratio || (ok?.seconds ? ok.renderSec / ok.seconds : 16);
   return {
     renderHours: (minutes * ratio) / 60,
     voiceCredits: Math.round(minutes * 1000),

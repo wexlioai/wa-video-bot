@@ -95,70 +95,133 @@ function captionsLayer({ words, format, settings, theme, lang, duration }) {
   return { html, css, js };
 }
 
-// ------------------------------------------------------------------ the wrapper
+// ------------------------------------------------------------------ CSS scoping
+/** Prefix every rule of a scene's CSS with its scene root, so several scenes can share one page. */
+export function scopeCss(css, scope) {
+  let out = '';
+  let i = 0;
+  const src = String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
+  while (i < src.length) {
+    const open = src.indexOf('{', i);
+    if (open < 0) break;
+    const head = src.slice(i, open).trim();
+    // find the matching close brace
+    let depth = 1;
+    let j = open + 1;
+    while (j < src.length && depth) { if (src[j] === '{') depth++; else if (src[j] === '}') depth--; j++; }
+    const body = src.slice(open + 1, j - 1);
+    if (/^@(media|supports|container)/i.test(head)) out += `${head}{${scopeCss(body, scope)}}\n`;
+    else if (/^@/.test(head)) out += `${head}{${body}}\n`; // @keyframes, @font-face… unchanged
+    else {
+      const sel = head.split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
+        if (/^(html|body|:root)\b/.test(x)) return null;
+        const m = x.match(/^\.(portrait|landscape)\b\s*(.*)$/);
+        if (m) return `.${m[1]} ${scope}${m[2] ? ` ${m[2]}` : ''}`;
+        if (/^#root\b/.test(x)) return x;
+        return `${scope} ${x}`;
+      }).filter(Boolean);
+      if (sel.length) out += `${sel.join(', ')}{${body}}\n`;
+    }
+    i = j;
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ the composition
+const fontLinkOf = (fonts) => `https://fonts.googleapis.com/css2?${fonts.map((f) => `family=${f.replace(/ /g, '+')}`).join('&')}&display=block`;
+
 /**
- * scene: { id, duration, words, audio (file name beside index.html or null), design: {body, css, js, fonts?} }
- * fonts: Google Fonts css2 family query, e.g. 'Poppins:wght@400;600;800'
+ * One HyperFrames composition holding one or more scenes in a row.
+ * scenes: [{ id, offset, duration, words, audio, design }] (offset = seconds from the start of this composition)
+ * fontsCss: local @font-face rules (no network while rendering); without it Google Fonts links are used.
+ * captions: true = subtitle layer in HTML (previews); final videos get subtitles as a separate layer.
+ * transition: seconds of cross-fade into each scene after the first.
  */
-export function sceneHtml({ scene, format, lang, theme, settings, motion }) {
+export function compositionHtml({ scenes, format, lang, theme, settings, motion, fontsCss = '', captions = false, transition = 0.35, compId = 'scene' }) {
   const { w, h } = FORMATS[format];
-  const D = scene.duration;
   const rtl = lang === 'ur';
-  const fam = scene.design.families || { heading: 'Poppins', body: 'Poppins' };
-  const given = [scene.design.fonts || 'Poppins:wght@400;600;800'].flat();
-  const fonts = [...new Set([...given, ...(rtl ? ['Noto Nastaliq Urdu:wght@400;700'] : [])])];
-  const fontLink = `https://fonts.googleapis.com/css2?${fonts.map((f) => `family=${f.replace(/ /g, '+')}`).join('&')}&display=block`;
-  const caps = captionsLayer({ words: scene.words, format, settings, theme, lang, duration: D });
+  const total = Math.max(...scenes.map((s) => s.offset + s.duration));
+  const fam = scenes[0].design.families || { heading: 'Poppins', body: 'Poppins' };
+  const fonts = [...new Set([...scenes.flatMap((s) => [s.design.fonts || 'Poppins:wght@400;600;800'].flat()), ...(rtl ? ['Noto Nastaliq Urdu:wght@400;700'] : [])])];
   const vars = Object.entries(theme).map(([k, v]) => `--${k}:${v};`).join('');
+  const E = ((ENERGY[settings.motion.energy] || 1) * (PERSONALITY[motion] || 1)).toFixed(3);
+  const caps = captions && scenes.length === 1 ? captionsLayer({ words: scenes[0].words, format, settings, theme, lang, duration: scenes[0].duration }) : { html: '', css: '', js: '' };
+  const sections = scenes.map((s, k) => {
+    const start = k === 0 ? s.offset : Math.max(0, s.offset - transition);
+    const dur = s.offset + s.duration - start;
+    return `<section id="sc-${s.id}" class="clip scene" data-start="${start.toFixed(3)}" data-duration="${dur.toFixed(3)}" data-track-index="${k % 2}">
+${s.design.body}
+</section>`;
+  }).join('\n');
+  const audios = scenes.filter((s) => s.audio).map((s, k) => `<audio id="voice-${s.id}" data-start="${s.offset.toFixed(3)}" data-volume="1" data-track-index="${10 + (k % 2)}" src="./${s.audio}"></audio>`).join('\n');
+  const css = scenes.map((s) => scopeCss(s.design.css || '', `#sc-${s.id}`)).join('\n');
+  const scripts = scenes.map((s, k) => `
+// ---- scene ${s.id}
+(function () {
+  const root = document.getElementById('sc-${s.id}');
+  const D = ${s.duration.toFixed(3)};
+  const WORDS = ${JSON.stringify((s.words || []).map((x) => ({ text: x.text, start: +x.start.toFixed(3), end: +x.end.toFixed(3) })))};
+  const at = (i) => (WORDS[Math.max(0, Math.min(WORDS.length - 1, i))] || { start: 0 }).start;
+  const when = (word, after = 0) => {
+    const k = _n(word);
+    const x = WORDS.find((y) => y.start >= after && (_n(y.text) === k || (k.length > 3 && _n(y.text).startsWith(k))));
+    return x ? Math.max(0, x.start) : Math.min(Math.max(0, D - 0.6), after + 0.4);
+  };
+  const $ = (q) => root.querySelector(q), $$ = (q) => Array.from(root.querySelectorAll(q));
+  const SFX = (window.__sfx = window.__sfx || []);
+  const sfx = (name, t, vol = 1) => { SFX.push({ name, t: ${s.offset.toFixed(3)} + Math.max(0, t), vol }); };
+  let tl;
+  gsap.context(() => {
+    tl = gsap.timeline();
+    try {
+${s.design.js || ''}
+    } catch (e) { console.error('scene animation error', e); }
+    tl.set({}, {}, D);
+  }, root);
+  master.add(tl, ${s.offset.toFixed(3)});
+  ${k > 0 && transition > 0 ? `master.fromTo(root, { opacity: 0 }, { opacity: 1, duration: ${transition}, ease: 'power1.inOut' }, ${Math.max(0, s.offset - transition).toFixed(3)});` : ''}
+})();`).join('\n');
   return `<!doctype html>
 <html lang="${rtl ? 'ur' : 'en'}" dir="${rtl ? 'rtl' : 'ltr'}">
 <head>
 <meta charset="UTF-8" />
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="${fontLink}">
+${fontsCss ? `<style>${fontsCss}</style>` : `<link rel="preconnect" href="https://fonts.googleapis.com">\n<link rel="stylesheet" href="${fontLinkOf(fonts)}">`}
 <script src="./gsap.min.js"></script>
+<script src="./motion-lib.js"></script>
 <style>
   html, body { margin:0; background:${theme.bg}; }
   #root { position:relative; width:${w}px; height:${h}px; overflow:hidden; background:${theme.bg}; color:${theme.text}; ${vars}
     --fh:'${fam.heading}'; --fb:'${fam.body}';
     font-family:'${fam.body}', ${rtl ? "'Noto Nastaliq Urdu', " : ''}Poppins, 'Segoe UI', Arial, sans-serif; }
-  .clip { position:absolute; inset:0; }
-  #stage { overflow:hidden; }
+  .clip { position:absolute; inset:0; overflow:hidden; }
   .sc { position:absolute; inset:0; overflow:hidden; }
-  ${scene.design.css || ''}
+  ${css}
   ${caps.css}
 </style>
 </head>
 <body>
-<div id="root" class="${format === 'short' ? 'portrait' : 'landscape'}" data-composition-id="scene" data-start="0" data-duration="${D.toFixed(3)}" data-width="${w}" data-height="${h}" data-fps="30">
-<section id="stage" class="clip" data-start="0" data-duration="${D.toFixed(3)}" data-track-index="0">
-${scene.design.body}
-</section>
+<div id="root" class="${format === 'short' ? 'portrait' : 'landscape'}" data-composition-id="${compId}" data-start="0" data-duration="${total.toFixed(3)}" data-width="${w}" data-height="${h}" data-fps="30">
+${sections}
 ${caps.html}
-${scene.audio ? `<audio id="voice" data-start="0" data-volume="1" src="./${scene.audio}"></audio>` : ''}
+${audios}
 </div>
 <script>
 window.__timelines = window.__timelines || {};
-const tl = gsap.timeline({ paused: true });
-const D = ${D.toFixed(3)}, W = ${w}, H = ${h}, PORTRAIT = ${format === 'short'}, LANG = '${lang}', RTL = ${rtl}, E = ${((ENERGY[settings.motion.energy] || 1) * (PERSONALITY[motion] || 1)).toFixed(3)};
+const master = gsap.timeline({ paused: true });
+const W = ${w}, H = ${h}, PORTRAIT = ${format === 'short'}, LANG = '${lang}', RTL = ${rtl}, E = ${E};
 const T = ${JSON.stringify(theme)};
-const WORDS = ${JSON.stringify((scene.words || []).map((w) => ({ text: w.text, start: +w.start.toFixed(3), end: +w.end.toFixed(3) })))};
 const _n = (x) => String(x).toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, '');
-const at = (i) => (WORDS[Math.max(0, Math.min(WORDS.length - 1, i))] || { start: 0 }).start;
-const when = (word, after = 0) => {
-  const k = _n(word);
-  const w = WORDS.find((x) => x.start >= after && (_n(x.text) === k || (k.length > 3 && _n(x.text).startsWith(k))));
-  return w ? Math.max(0, w.start) : Math.min(Math.max(0, D - 0.6), after + 0.4);
-};
 const rand = (i) => { const x = Math.sin((i + 1) * 12.9898) * 43758.5453; return x - Math.floor(x); };
-const $ = (s) => document.querySelector('#stage ' + s), $$ = (s) => Array.from(document.querySelectorAll('#stage ' + s));
-try {
-${scene.design.js || ''}
-} catch (e) { console.error('scene animation error', e); }
-${caps.js}
-tl.set({}, {}, D);
-window.__timelines.scene = tl;
+${scripts}
+${caps.js ? `(function(){ const tl = master; ${caps.js} })();` : ''}
+master.set({}, {}, ${total.toFixed(3)});
+window.__timelines['${compId}'] = master;
 </script>
 </body>
 </html>`;
+}
+
+/** A single scene as its own composition (previews, storyboard, critic frames). */
+export function sceneHtml({ scene, format, lang, theme, settings, motion, fontsCss = '', captions = true }) {
+  return compositionHtml({ scenes: [{ ...scene, offset: 0 }], format, lang, theme, settings, motion, fontsCss, captions, compId: 'scene' });
 }

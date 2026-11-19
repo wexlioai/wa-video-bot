@@ -142,7 +142,7 @@ tl.from('.num', { scale: 0.6, opacity: 0, duration: 0.6 * E, ease: 'back.out(1.8
 ${num == null ? '' : `const o = { v: 0 };
 tl.to(o, { v: ${num}, duration: Math.min(1.8, D * 0.4) * E, ease: 'power2.out', onUpdate: () => {
   const s = o.v.toFixed(${dec});
-  document.getElementById('nv').textContent = ${commas} ? Number(s).toLocaleString('en-US', { minimumFractionDigits: ${dec}, maximumFractionDigits: ${dec} }) : s;
+  $('#nv').textContent = ${commas} ? Number(s).toLocaleString('en-US', { minimumFractionDigits: ${dec}, maximumFractionDigits: ${dec} }) : s;
 } }, 0.3);`}
 tl.from('.lbl', { y: 30, opacity: 0, duration: 0.6 * E, ease: 'power2.out' }, 0.9);`,
     };
@@ -209,7 +209,7 @@ V.forEach((val, i) => {
   tl.from('#r' + i, { opacity: 0, y: 20, duration: 0.4 * E }, t);
   tl.from('#r' + i + ' .fill', { scaleX: 0, duration: 0.9 * E, ease: 'power3.out' }, t + 0.1);
   const o = { v: 0 }, dec = String(val).includes('.') ? String(val).split('.')[1].length : 0;
-  tl.to(o, { v: val, duration: 0.9 * E, ease: 'power3.out', onUpdate: () => { document.getElementById('v' + i).textContent = o.v.toFixed(dec); } }, t + 0.1);
+  tl.to(o, { v: val, duration: 0.9 * E, ease: 'power3.out', onUpdate: () => { $('#v' + i).textContent = o.v.toFixed(dec); } }, t + 0.1);
 });`,
     };
   },

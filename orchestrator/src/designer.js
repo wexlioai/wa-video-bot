@@ -12,6 +12,7 @@ import { prepareRefs, bannedIssues, styleLibrary, rulesText } from './look.js';
 import { sceneHtml, esc } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
 import { expandProps } from './props.js';
+import { ROOT } from './config.js';
 
 const BATCH = 4; // scenes per Claude call
 const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12);
@@ -36,7 +37,9 @@ function hint(v = {}) {
   }
 }
 
-const BAD_JS = /(Math\.random|Date\.now|new Date|setTimeout|setInterval|requestAnimationFrame|fetch\s*\(|XMLHttpRequest|repeat\s*:\s*-1|import\s*\()/;
+const BAD_JS = /(Math\.random|Date\.now|new Date|setTimeout|setInterval|requestAnimationFrame|fetch\s*\(|XMLHttpRequest|repeat\s*:\s*-1|import\s*\(|document\.getElementById)/;
+// slow to render frame by frame: keep them out of scenes
+const SLOW_CSS = /(backdrop-filter|blur\(\s*([7-9]|\d{2,})px)/i;
 
 /** Parse + check one scene file. Returns { design } or { problems: [...] }. */
 export function parseScene(text, look, sceneId = 's') {
@@ -48,7 +51,9 @@ export function parseScene(text, look, sceneId = 's') {
   if (!js.trim()) problems.push('no animation script');
   try { new vm.Script(`(function(){\n${js}\n})`); } catch (e) { problems.push(`script syntax error: ${e.message}`); }
   const bad = js.match(BAD_JS);
-  if (bad) problems.push(`not allowed in the script: ${bad[0]}`);
+  if (bad) problems.push(`not allowed in the script: ${bad[0]}${bad[0].includes('getElementById') ? ' (use $("#id") instead)' : ''}`);
+  const slow = `${css}\n${body}`.match(SLOW_CSS);
+  if (slow) problems.push(`too slow to render: ${slow[0]} (avoid large blur filters and backdrop-filter)`);
   problems.push(...bannedIssues(text, { html: true }).filter((x) => x !== 'frame contains JavaScript').map((x) => x.replace('frame', 'scene')));
   const ex = expandProps(body, look.niche || 'general', sceneId);
   if (ex.unknown.length) problems.push(`unknown prop(s): ${ex.unknown.join(', ')} (use names from _ref/props-${look.niche}.json)`);
@@ -250,6 +255,7 @@ export async function captureScenes(job, { props, designs, look, settings, forma
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(dir, { recursive: true });
   await fs.copyFile(gsapFile, path.join(dir, 'gsap.min.js'));
+  await fs.copyFile(path.join(ROOT, 'motion', 'motion-lib.js'), path.join(dir, 'motion-lib.js')).catch(() => {});
   const portrait = format === 'short';
   const [W, H] = portrait ? [1080, 1920] : [1920, 1080];
   const fps = props.fps || 30;
