@@ -1,5 +1,6 @@
 # Task: change the video's scenes as the person asked
 
+{{RULES}}
 You are the motion designer of this video. The person looked at the storyboard (one frame per scene) and asked:
 
 """{{REQUEST}}"""

@@ -5,7 +5,18 @@ import { audioDuration, run } from './util.js';
 
 /** Speak with the configured provider: 'edge' (free), 'openspeaker' or 'elevenlabs'. */
 // speed: extra multiplier from the video's settings (1 = the configured default)
-export async function speak(text, voiceId, outFile, language, { speed = 1 } = {}) {
+// Honorifics are shown as glyphs but must be spoken as words.
+export function spokenText(text, language) {
+  const ur = language === 'ur';
+  return String(text)
+    .replace(/\(?\s*\uFDFA\s*\)?/g, ur ? ' صلی اللہ علیہ وسلم ' : ', peace be upon him, ')
+    .replace(/\(?\s*\uFDFB\s*\)?/g, ur ? ' جل جلالہ ' : ' ')
+    .replace(/\((ra|r\.a\.)\)/gi, ur ? ' رضی اللہ عنہ ' : ', may Allah be pleased with him,')
+    .replace(/\s+,/g, ',').replace(/,\s*([.!?])/g, '$1').replace(/\s{2,}/g, ' ').trim();
+}
+
+export async function speak(rawText, voiceId, outFile, language, { speed = 1 } = {}) {
+  const text = spokenText(rawText, language);
   if (cfg.tts.provider === 'elevenlabs') return speakEleven(text, voiceId, outFile, language, speed);
   if (cfg.tts.provider === 'openspeaker') return speakOpenSpeaker(text, voiceId, outFile, speed);
   return speakEdge(text, voiceId, outFile, speed);

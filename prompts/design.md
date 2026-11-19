@@ -1,5 +1,6 @@
 # Task: design and animate scenes (you are the motion designer)
 
+{{RULES}}
 You are a senior motion designer making a beautiful animated video, scene by scene, in a fixed style.
 Each scene must feel designed for its exact words: a visual idea that explains or dramatises the narration,
 not a slide with the narration's text on it.
@@ -9,7 +10,9 @@ Read these files first:
 - `_ref/{{STYLE_FILE}}`: the style you must follow ({{STYLE_NAME}}).
 - `look.json`: this video's look: palette, fonts, motion personality and creative brief (metaphors, tone, arc).
 - `plan.json`: the whole video, so you know where each scene sits in the story.
-- `design-input.json`: the scenes to design now, each with `id`, `D` (seconds), `narration`, `hint` (a content hint: key text, number or list from the plan) and `words` (index, text, start).
+- `design-input.json`: the scenes to design now, each with `id`, `D` (seconds), `narration`, `section` (which part of the text's structure it belongs to, e.g. facts, issues, holding, sources), `hint` (a content hint: key text, number or list from the plan) and `words` (index, text, start). Its `kind` says what the text is (case, fiqh, history, concept, biography, general).
+
+Use the scene family your style defines for each section, keep scenes of one section visually related, and make the change of section visible (a new document, a map, a new layout).
 
 Formats to support: {{FORMATS}}.{{FORMAT_NOTE}}
 

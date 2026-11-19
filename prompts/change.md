@@ -1,5 +1,6 @@
 # Task: change the finished video as the person asked
 
+{{RULES}}
 The person watched the preview of their video and asked:
 
 """{{REQUEST}}"""

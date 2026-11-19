@@ -1,5 +1,5 @@
 {
-  "_note": "Style library. Only styles with ready=true may be chosen. Each ready style has a skill file with its rules.",
+  "_note": "Style library. Only styles with ready=true and the active niche (NICHE in .env or the 'niche' command) may be chosen. Each has a skill file with its rules.",
   "styles": [
     {
       "id": "flat-explainer",
@@ -7,7 +7,8 @@
       "ready": true,
       "file": "flat-explainer.md",
       "look": "clean vector objects, people and icons, smooth morphs, generous space",
-      "fits": "how-to, services, finance basics, health tips, product explainers"
+      "fits": "how-to, services, finance basics, health tips, product explainers",
+      "niche": "general"
     },
     {
       "id": "paper-cutout",
@@ -15,7 +16,8 @@
       "ready": true,
       "file": "paper-cutout.md",
       "look": "layered cut paper with soft drop shadows, torn edges, props that pop in",
-      "fits": "lessons, stories, habits, kids, values, gentle motivation"
+      "fits": "lessons, stories, habits, kids, values, gentle motivation",
+      "niche": "general"
     },
     {
       "id": "editorial",
@@ -23,7 +25,8 @@
       "ready": true,
       "file": "editorial.md",
       "look": "bold serif headlines, strong grids, rules and columns, photo-like cut shapes, print colour",
-      "fits": "news, opinion, business, economics, analysis, biographies"
+      "fits": "news, opinion, business, economics, analysis, biographies",
+      "niche": "general"
     },
     {
       "id": "isometric",
@@ -31,7 +34,8 @@
       "ready": true,
       "look": "small isometric scenes that build up",
       "fits": "processes, systems, logistics",
-      "file": "isometric.md"
+      "file": "isometric.md",
+      "niche": "general"
     },
     {
       "id": "sketchnote",
@@ -39,7 +43,8 @@
       "ready": true,
       "look": "marker lines that draw themselves, doodles",
       "fits": "education, ideas, summaries",
-      "file": "sketchnote.md"
+      "file": "sketchnote.md",
+      "niche": "general"
     },
     {
       "id": "halftone",
@@ -47,7 +52,8 @@
       "ready": true,
       "look": "print textures, warm risograph colours",
       "fits": "history, culture, essays",
-      "file": "halftone.md"
+      "file": "halftone.md",
+      "niche": "general"
     },
     {
       "id": "technical",
@@ -55,7 +61,8 @@
       "ready": true,
       "look": "line drawings that construct themselves on light paper",
       "fits": "engineering, products, how things work",
-      "file": "technical.md"
+      "file": "technical.md",
+      "niche": "general"
     },
     {
       "id": "clay",
@@ -63,7 +70,8 @@
       "ready": true,
       "look": "rounded clay-like 3D objects",
       "fits": "wellness, lifestyle, friendly products",
-      "file": "clay.md"
+      "file": "clay.md",
+      "niche": "general"
     },
     {
       "id": "collage",
@@ -71,7 +79,8 @@
       "ready": true,
       "look": "framed or torn-paper collage, map lines",
       "fits": "true stories, travel, history",
-      "file": "collage.md"
+      "file": "collage.md",
+      "niche": "general"
     },
     {
       "id": "kinetic",
@@ -79,7 +88,62 @@
       "ready": true,
       "look": "big words moving with the voice, lots of space",
       "fits": "quotes, motivation, Shorts",
-      "file": "kinetic.md"
+      "file": "kinetic.md",
+      "niche": "general"
+    },
+    {
+      "id": "court-archive",
+      "name": "Court Archive",
+      "ready": true,
+      "file": "court-archive.md",
+      "niche": "islamic",
+      "look": "parchment judgment documents, wax seals, HELD stamps, ruled lines, girih borders",
+      "fits": "court cases, judgments, fiqh rulings, legal principles"
+    },
+    {
+      "id": "illuminated",
+      "name": "Illuminated Manuscript",
+      "ready": true,
+      "file": "illuminated.md",
+      "niche": "islamic",
+      "look": "gold-leaf borders, lapis and ink, margin ornaments, page turns",
+      "fits": "Qur'an and hadith commentary, ethics, spiritual texts"
+    },
+    {
+      "id": "map-documentary",
+      "name": "Historical Map Documentary",
+      "ready": true,
+      "file": "map-documentary.md",
+      "niche": "islamic",
+      "look": "stylised maps of the region, routes, city markers, AH/CE timelines",
+      "fits": "sira (without figures), history, campaigns, migrations"
+    },
+    {
+      "id": "geometric",
+      "name": "Geometric and Architecture",
+      "ready": true,
+      "file": "geometric.md",
+      "niche": "islamic",
+      "look": "self-constructing girih patterns, arches, domes, lattice light",
+      "fits": "openings, big themes, institutions, transitions"
+    },
+    {
+      "id": "scholarly-editorial",
+      "name": "Scholarly Editorial",
+      "ready": true,
+      "file": "scholarly-editorial.md",
+      "niche": "islamic",
+      "look": "law-review grids, footnotes, citation cards, evidence and isnad diagrams",
+      "fits": "analysis, comparison of schools, evidence and sources"
+    },
+    {
+      "id": "calligraphic",
+      "name": "Calligraphic Kinetic",
+      "ready": true,
+      "file": "calligraphic.md",
+      "niche": "islamic",
+      "look": "large classical type, Arabic terms from the text with meaning, calm space",
+      "fits": "concepts, definitions, quotations, Shorts"
     }
   ]
 }

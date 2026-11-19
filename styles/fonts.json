@@ -1,34 +1,170 @@
 {
   "_note": "Google Fonts the art director may use. `query` is the exact css2 family query (known-valid weights).",
   "fonts": [
-    { "family": "Fraunces", "query": "Fraunces:wght@400;600;700;900", "kind": "serif display, warm, editorial" },
-    { "family": "Playfair Display", "query": "Playfair Display:wght@400;600;700;800;900", "kind": "serif display, classic magazine" },
-    { "family": "DM Serif Display", "query": "DM Serif Display", "kind": "serif display (one weight), elegant headlines" },
-    { "family": "Libre Baskerville", "query": "Libre Baskerville:wght@400;700", "kind": "serif, bookish, history" },
-    { "family": "Lora", "query": "Lora:wght@400;500;600;700", "kind": "serif, gentle reading" },
-    { "family": "Merriweather", "query": "Merriweather:wght@400;700;900", "kind": "serif, sturdy, news" },
-    { "family": "Bodoni Moda", "query": "Bodoni Moda:wght@400;600;700;800", "kind": "high-contrast serif, fashion, luxury" },
-    { "family": "Cormorant Garamond", "query": "Cormorant Garamond:wght@500;600;700", "kind": "refined serif, culture, essays" },
-    { "family": "Inter", "query": "Inter:wght@400;500;600;700;800", "kind": "neutral sans, body text" },
-    { "family": "Poppins", "query": "Poppins:wght@400;500;600;700;800", "kind": "geometric sans, friendly, explainer" },
-    { "family": "DM Sans", "query": "DM Sans:wght@400;500;700", "kind": "clean sans, modern" },
-    { "family": "Manrope", "query": "Manrope:wght@400;500;600;700;800", "kind": "modern sans, business" },
-    { "family": "Plus Jakarta Sans", "query": "Plus Jakarta Sans:wght@400;500;600;700;800", "kind": "modern sans, product" },
-    { "family": "Work Sans", "query": "Work Sans:wght@400;500;600;700;800", "kind": "sans, straightforward" },
-    { "family": "Outfit", "query": "Outfit:wght@400;500;600;700;800", "kind": "geometric sans, light-hearted" },
-    { "family": "Archivo", "query": "Archivo:wght@400;500;600;700;800;900", "kind": "grotesque sans, strong headlines" },
-    { "family": "Archivo Black", "query": "Archivo Black", "kind": "heavy grotesque (one weight), posters" },
-    { "family": "Bebas Neue", "query": "Bebas Neue", "kind": "tall condensed caps (one weight), bold editorial titles" },
-    { "family": "Oswald", "query": "Oswald:wght@400;500;600;700", "kind": "condensed sans, headlines" },
-    { "family": "Nunito", "query": "Nunito:wght@400;600;700;800;900", "kind": "rounded sans, soft, kids, wellness" },
-    { "family": "Quicksand", "query": "Quicksand:wght@400;500;600;700", "kind": "rounded sans, light, gentle" },
-    { "family": "Baloo 2", "query": "Baloo 2:wght@400;500;600;700;800", "kind": "rounded chunky, playful, storybook" },
-    { "family": "Fredoka", "query": "Fredoka:wght@400;500;600;700", "kind": "rounded, playful, friendly" },
-    { "family": "Caveat", "query": "Caveat:wght@400;600;700", "kind": "handwriting, notes, sketch accents" },
-    { "family": "Patrick Hand", "query": "Patrick Hand", "kind": "handwritten print (one weight), sketchnote" },
-    { "family": "Kalam", "query": "Kalam:wght@300;400;700", "kind": "handwriting, warm" },
-    { "family": "Noto Nastaliq Urdu", "query": "Noto Nastaliq Urdu:wght@400;700", "kind": "Urdu Nastaliq (use for Urdu text)" },
-    { "family": "Gulzar", "query": "Gulzar", "kind": "Urdu Nastaliq display (one weight), Urdu headlines" },
-    { "family": "Noto Naskh Arabic", "query": "Noto Naskh Arabic:wght@400;700", "kind": "Naskh, clean Urdu/Arabic text" }
+    {
+      "family": "Fraunces",
+      "query": "Fraunces:wght@400;600;700;900",
+      "kind": "serif display, warm, editorial"
+    },
+    {
+      "family": "Playfair Display",
+      "query": "Playfair Display:wght@400;600;700;800;900",
+      "kind": "serif display, classic magazine"
+    },
+    {
+      "family": "DM Serif Display",
+      "query": "DM Serif Display",
+      "kind": "serif display (one weight), elegant headlines"
+    },
+    {
+      "family": "Libre Baskerville",
+      "query": "Libre Baskerville:wght@400;700",
+      "kind": "serif, bookish, history"
+    },
+    {
+      "family": "Lora",
+      "query": "Lora:wght@400;500;600;700",
+      "kind": "serif, gentle reading"
+    },
+    {
+      "family": "Merriweather",
+      "query": "Merriweather:wght@400;700;900",
+      "kind": "serif, sturdy, news"
+    },
+    {
+      "family": "Bodoni Moda",
+      "query": "Bodoni Moda:wght@400;600;700;800",
+      "kind": "high-contrast serif, fashion, luxury"
+    },
+    {
+      "family": "Cormorant Garamond",
+      "query": "Cormorant Garamond:wght@500;600;700",
+      "kind": "refined serif, culture, essays"
+    },
+    {
+      "family": "Inter",
+      "query": "Inter:wght@400;500;600;700;800",
+      "kind": "neutral sans, body text"
+    },
+    {
+      "family": "Poppins",
+      "query": "Poppins:wght@400;500;600;700;800",
+      "kind": "geometric sans, friendly, explainer"
+    },
+    {
+      "family": "DM Sans",
+      "query": "DM Sans:wght@400;500;700",
+      "kind": "clean sans, modern"
+    },
+    {
+      "family": "Manrope",
+      "query": "Manrope:wght@400;500;600;700;800",
+      "kind": "modern sans, business"
+    },
+    {
+      "family": "Plus Jakarta Sans",
+      "query": "Plus Jakarta Sans:wght@400;500;600;700;800",
+      "kind": "modern sans, product"
+    },
+    {
+      "family": "Work Sans",
+      "query": "Work Sans:wght@400;500;600;700;800",
+      "kind": "sans, straightforward"
+    },
+    {
+      "family": "Outfit",
+      "query": "Outfit:wght@400;500;600;700;800",
+      "kind": "geometric sans, light-hearted"
+    },
+    {
+      "family": "Archivo",
+      "query": "Archivo:wght@400;500;600;700;800;900",
+      "kind": "grotesque sans, strong headlines"
+    },
+    {
+      "family": "Archivo Black",
+      "query": "Archivo Black",
+      "kind": "heavy grotesque (one weight), posters"
+    },
+    {
+      "family": "Bebas Neue",
+      "query": "Bebas Neue",
+      "kind": "tall condensed caps (one weight), bold editorial titles"
+    },
+    {
+      "family": "Oswald",
+      "query": "Oswald:wght@400;500;600;700",
+      "kind": "condensed sans, headlines"
+    },
+    {
+      "family": "Nunito",
+      "query": "Nunito:wght@400;600;700;800;900",
+      "kind": "rounded sans, soft, kids, wellness"
+    },
+    {
+      "family": "Quicksand",
+      "query": "Quicksand:wght@400;500;600;700",
+      "kind": "rounded sans, light, gentle"
+    },
+    {
+      "family": "Baloo 2",
+      "query": "Baloo 2:wght@400;500;600;700;800",
+      "kind": "rounded chunky, playful, storybook"
+    },
+    {
+      "family": "Fredoka",
+      "query": "Fredoka:wght@400;500;600;700",
+      "kind": "rounded, playful, friendly"
+    },
+    {
+      "family": "Caveat",
+      "query": "Caveat:wght@400;600;700",
+      "kind": "handwriting, notes, sketch accents"
+    },
+    {
+      "family": "Patrick Hand",
+      "query": "Patrick Hand",
+      "kind": "handwritten print (one weight), sketchnote"
+    },
+    {
+      "family": "Kalam",
+      "query": "Kalam:wght@300;400;700",
+      "kind": "handwriting, warm"
+    },
+    {
+      "family": "Noto Nastaliq Urdu",
+      "query": "Noto Nastaliq Urdu:wght@400;700",
+      "kind": "Urdu Nastaliq (use for Urdu text)"
+    },
+    {
+      "family": "Gulzar",
+      "query": "Gulzar",
+      "kind": "Urdu Nastaliq display (one weight), Urdu headlines"
+    },
+    {
+      "family": "Noto Naskh Arabic",
+      "query": "Noto Naskh Arabic:wght@400;700",
+      "kind": "Naskh, clean Urdu/Arabic text"
+    },
+    {
+      "family": "Amiri",
+      "query": "Amiri:wght@400;700",
+      "kind": "classical Naskh Arabic (Arabic text from the script) and elegant Latin"
+    },
+    {
+      "family": "Scheherazade New",
+      "query": "Scheherazade New:wght@400;700",
+      "kind": "traditional Arabic Naskh (Arabic text from the script)"
+    },
+    {
+      "family": "Reem Kufi",
+      "query": "Reem Kufi:wght@400;600;700",
+      "kind": "Kufic-style Arabic display (Arabic terms from the script)"
+    },
+    {
+      "family": "Cinzel",
+      "query": "Cinzel:wght@400;600;700",
+      "kind": "classical inscription capitals, titles"
+    }
   ]
 }

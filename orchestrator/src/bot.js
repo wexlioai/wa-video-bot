@@ -14,7 +14,7 @@ import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './v
 import { startProgress } from './progress.js';
 import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk, gsapPath } from './motion.js';
 import { initSettings, snapshotVersion, restoreVersion, loadSettings, saveSettings, applyTweaks, parseTweaks, TWEAKS, normalizeSettings } from './project.js';
-import { styleLibrary, bannedIssues } from './look.js';
+import { styleLibrary, bannedIssues, nicheOf, nicheStyles, rulesText, stylesText } from './look.js';
 import { pathToFileURL } from 'node:url';
 import { prepareRefs, loadDirections, shootFrames, applyLook, savedText, tasteText, loadLook } from './look.js';
 import { designScenes, storyboard, acceptEditedScenes, reviewScenes } from './designer.js';
@@ -32,7 +32,7 @@ const LIMIT_RETRY_MIN = 30;
 const HELP = [
   'Send me a script as a *PDF, DOCX or TXT* (or paste a long text) and I will make a video.',
   'I ask you everything with tap-to-choose menus (you can also reply with the option number).',
-  'Commands: `status`, `retry`, `undo`, `change voice`, `change look`, `change music`, `forget voice`, `forget style`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
+  'Commands: `status`, `retry`, `undo`, `change voice`, `change look`, `change music`, `niche`, `forget voice`, `forget style`, `use lists` / `use polls`, `cancel`, `version`, `engine test`.',
   'Books and long texts: I show the size and cost first, then make a series, a summary video or just the parts you pick. Series: `episodes`, `episode 3`, `upload all`, `stop series`.',
 ].join('\n');
 
@@ -138,8 +138,8 @@ async function onChoice(job, option) {
     }
     case 'look': {
       const d = job.directions.find((x) => x.n === (v === 'surprise' ? job.recommended : v)) || job.directions[0];
-      await applyLook(job.dir, d, job.brief);
       const prefs = await loadPrefs();
+      await applyLook(job.dir, d, job.brief, nicheOf(prefs));
       prefs.taste ||= { picks: [] };
       prefs.taste.picks = [...(prefs.taste.picks || []), { name: d.name, style: d.style, styleName: d.styleName, motion: d.motion, at: new Date().toISOString() }].slice(-20);
       await savePrefs(prefs);
@@ -419,7 +419,7 @@ async function changeVideo(job, request) {
   const p = await startProgress('✏️ Claude is making your change…');
   let reply;
   try {
-    reply = (await askClaude(job.dir, 'change', { REQUEST: request.replace(/"""/g, '"'), STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 40 })).trim();
+    reply = (await askClaude(job.dir, 'change', { REQUEST: request.replace(/"""/g, '"'), STYLE_FILE: style?.file || 'flat-explainer.md', RULES: rulesText(look?.niche) }, { maxTurns: 40 })).trim();
   } catch (e) {
     await p.done();
     await restoreVersion(job, job.version).catch(() => {});
@@ -588,7 +588,9 @@ const steps = {
     job.state = 'DIRECTING';
     await saveJob(job);
     const prefs = await loadPrefs();
-    const saved = prefs.look?.mode === 'always' && !job.forceLookChoice ? prefs.look : null;
+    const nicheIds = (await nicheStyles(nicheOf(prefs))).map((x) => x.id);
+    // a saved style only counts inside the current niche
+    const saved = prefs.look?.mode === 'always' && !job.forceLookChoice && nicheIds.includes(prefs.look.style) ? prefs.look : null;
     job.forceLookChoice = false;
     job.storyboardOk = false;
     job.needSample = true; // a new look is shown as a demo before any full render
@@ -600,12 +602,16 @@ const steps = {
     try {
       await fs.rm(path.join(job.dir, 'look'), { recursive: true, force: true });
       await prepareRefs(job.dir);
+      const niche = nicheOf(prefs);
+      job.niche = niche;
       await askClaude(job.dir, 'direct', {
+        STYLES: stylesText(await nicheStyles(niche)),
+        RULES: rulesText(niche),
         SAVED: savedText(saved),
-        TASTE: tasteText(prefs.taste?.picks),
+        TASTE: tasteText((prefs.taste?.picks || []).filter((x) => nicheIds.includes(x.style))),
         COUNT: saved ? 'exactly 1 direction' : 'exactly 3 directions',
       });
-      res = await loadDirections(job.dir, job.language);
+      res = await loadDirections(job.dir, job.language, niche);
       if (res.directions.length) {
         await p.update('🎨 Taking a picture of each look…', true);
         await shootFrames(res.directions);
@@ -628,7 +634,7 @@ const steps = {
     await saveJob(job);
     if (job.directions.length === 1) {
       const d = job.directions[0];
-      await applyLook(job.dir, d, job.brief);
+      await applyLook(job.dir, d, job.brief, job.niche);
       await wa.sendImage(fileUrl(job, path.relative(job.dir, d.image)), `🎨 *${d.name}* (${d.styleName})\n${d.why}\nSend \`change look\` to see other options.`);
       return afterLook(job, after, true);
     }
@@ -696,7 +702,10 @@ const steps = {
     job.state = 'PRODUCING';
     await saveJob(job);
     const plan = await loadPlan(job);
-    const settings = await initSettings(job, (await loadPrefs()).defaultSettings);
+    const prefsNow = await loadPrefs();
+    // niche defaults: no background music for Islamic scholarship (the person's own defaults win)
+    const nicheDefaults = nicheOf(prefsNow) === 'islamic' ? { music: { volume: 'off' } } : {};
+    const settings = await initSettings(job, { ...nicheDefaults, ...(prefsNow.defaultSettings || {}) });
     if (job.needSample && !job.sampleOk) {
       return steps.sample(job, plan, settings);
     }
@@ -997,7 +1006,7 @@ const steps = {
     let reply;
     try {
       await prepareRefs(job.dir);
-      reply = (await askClaude(job.dir, 'redesign', { REQUEST: request.replace(/"""/g, '"'), STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 40 })).trim();
+      reply = (await askClaude(job.dir, 'redesign', { REQUEST: request.replace(/"""/g, '"'), STYLE_FILE: style?.file || 'flat-explainer.md', RULES: rulesText(look?.niche) }, { maxTurns: 40 })).trim();
     } finally {
       await p.done();
     }
@@ -1034,7 +1043,7 @@ const steps = {
       await prepareRefs(job.dir);
       await fs.rm(path.join(job.dir, 'thumbs'), { recursive: true, force: true });
       await fs.mkdir(path.join(job.dir, 'thumbs'), { recursive: true });
-      await askClaude(job.dir, 'thumbs', { STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 25 });
+      await askClaude(job.dir, 'thumbs', { STYLE_FILE: style?.file || 'flat-explainer.md', RULES: rulesText(look?.niche) }, { maxTurns: 25 });
       shots = await shootThumbs(job.dir);
     } catch (e) {
       if (e instanceof ClaudeLimitError) throw e;
@@ -1390,6 +1399,15 @@ async function handleMessage(data) {
     prefs.choiceStyle = lower === 'use polls' ? 'poll' : lower === 'use lists' ? 'list' : 'text';
     await savePrefs(prefs);
     return wa.sendText(`👍 From now on I'll show choices as ${{ poll: 'polls', list: 'menus (lists)', text: 'numbered text' }[prefs.choiceStyle]}.`);
+  }
+  const nicheCmd = lower.match(/^niche(?:\s+(islamic|general))?$/);
+  if (nicheCmd) {
+    const prefs = await loadPrefs();
+    if (!nicheCmd[1]) return wa.sendText(`Your niche is *${nicheOf(prefs)}*. Send \`niche islamic\` (Islamic scholarship and history styles and rules) or \`niche general\` (all-purpose styles).`);
+    prefs.niche = nicheCmd[1];
+    await savePrefs(prefs);
+    const list = (await nicheStyles(prefs.niche)).map((x) => `• ${x.name}`).join('\n');
+    return wa.sendText(`👍 Niche set to *${prefs.niche}*. Next videos choose from:\n${list}`);
   }
   if (lower === 'forget style' || lower === 'forget look') {
     const prefs = await loadPrefs();

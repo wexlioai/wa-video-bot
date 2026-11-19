@@ -6,9 +6,12 @@ to design how this particular video should LOOK, from what the script is about a
 Files in this folder:
 - `plan.json`: the video plan (title, language, scenes with narration). Read it first.
 - `script.txt`: the original script text.
-- `_ref/index.json`: the style library. You may only choose styles with `"ready": true`.
-- `_ref/<style>.md`: the rules of each ready style. Read the files of the styles you consider.
+- The styles you may choose from (and only these):
+{{STYLES}}
+- `_ref/<file>`: the rules of each style. Read the files of the styles you consider.
 - `_ref/fonts.json`: the only fonts you may use, with their exact Google Fonts `query`.
+
+{{RULES}}
 
 {{SAVED}}
 
@@ -35,7 +38,7 @@ Files in this folder:
   "directions": [
     {
       "name": "2-4 word name of this look, e.g. 'Sunny paper village'",
-      "style": "a ready style id from _ref/index.json",
+      "style": "one of the style ids listed above",
       "why": "one sentence: why this look fits this script",
       "palette": { "bg": "#rrggbb", "bg2": "#rrggbb", "ink": "#rrggbb", "primary": "#rrggbb", "accent": "#rrggbb" },
       "fonts": { "heading": "exact family from fonts.json", "body": "exact family from fonts.json" },

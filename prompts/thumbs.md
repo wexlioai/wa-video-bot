@@ -1,5 +1,6 @@
 # Task: design 3 YouTube thumbnails
 
+{{RULES}}
 Design three thumbnails for this video. They must stop the scroll at a small size on a phone.
 
 Read: `plan.json` (title, narration), `look.json` (palette, fonts, style, brief), `_ref/{{STYLE_FILE}}` (style rules), `_ref/fonts.json` (exact Google Fonts queries).

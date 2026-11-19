@@ -14,6 +14,19 @@ const isHex = (s) => typeof s === 'string' && /^#[0-9a-fA-F]{6}$/.test(s);
 export async function styleLibrary() {
   return (await readJson(path.join(STYLES_DIR, 'index.json'))).styles;
 }
+
+// ------------------------------------------------------------------ niche (the kind of content this person makes)
+export const NICHES = ['islamic', 'general'];
+/** The person's niche: their own choice (`niche …` command) or NICHE in .env (default islamic). */
+export const nicheOf = (prefs) => (NICHES.includes(prefs?.niche) ? prefs.niche : (NICHES.includes(process.env.NICHE) ? process.env.NICHE : 'islamic'));
+export async function nicheStyles(niche) {
+  return (await styleLibrary()).filter((s) => s.ready && (s.niche || 'general') === niche);
+}
+/** Prompt text: the niche's rules file (copied into _ref by prepareRefs). */
+export const rulesText = (niche) => (niche === 'islamic'
+  ? 'IMPORTANT: this channel publishes Islamic scholarship and history. Read `_ref/rules-islamic.md` first and follow it strictly in everything you make.'
+  : '');
+export const stylesText = (styles) => styles.map((s) => `  - \`${s.id}\` ${s.name} (file \`_ref/${s.file}\`): ${s.look}. Fits: ${s.fits}.`).join('\n');
 async function fontList() {
   return (await readJson(path.join(STYLES_DIR, 'fonts.json'))).fonts;
 }
@@ -68,11 +81,11 @@ export function bannedIssues(text, { html = false } = {}) {
 
 // ------------------------------------------------------------------ directions
 /** Validate + repair directions.json. Returns { brief, directions, recommended, dropped: [reason] }. */
-export async function loadDirections(jobDir, language) {
+export async function loadDirections(jobDir, language, niche = 'general') {
   const brief = await readJson(path.join(jobDir, 'look', 'brief.json')).catch(() => ({}));
   const raw = await readJson(path.join(jobDir, 'look', 'directions.json'));
   const styles = await styleLibrary();
-  const ready = new Map(styles.filter((s) => s.ready).map((s) => [s.id, s]));
+  const ready = new Map(styles.filter((s) => s.ready && (s.niche || 'general') === niche).map((s) => [s.id, s]));
   const fonts = new Map((await fontList()).map((f) => [f.family.toLowerCase(), f]));
   const dropped = [];
   const briefIssues = bannedIssues(JSON.stringify(brief));
@@ -148,8 +161,9 @@ export async function shootFrames(directions) {
 
 // ------------------------------------------------------------------ the chosen look
 /** look.json = what every later step designs with. Also re-colours plan.theme for the classic engine. */
-export async function applyLook(jobDir, direction, brief) {
+export async function applyLook(jobDir, direction, brief, niche) {
   const look = {
+    niche: niche || 'general',
     name: direction.name,
     style: direction.style,
     styleName: direction.styleName,

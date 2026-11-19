@@ -4,6 +4,7 @@
   "title": "YouTube title, max 90 chars, in the script's language",
   "description": "2-4 short paragraphs for YouTube, then 3-5 hashtags",
   "tags": ["8 to 15 tags"],
+  "kind": "case",                   // what the text is: case | fiqh | history | concept | biography | general
   "theme": {                        // all #rrggbb. Dark background, high-contrast text.
     "bg": "#0b1020", "bg2": "#1c2b52", "primary": "#4f8cff", "accent": "#ffd166", "text": "#ffffff"
   },
@@ -11,6 +12,7 @@
     {
       "id": "s01",                  // unique, keep ids stable when editing
       "narration": "Exact words to be spoken for this scene.",
+      "section": "facts",           // the part of the structure this scene belongs to (see the plan rules)
       "visual": { "type": "title", "heading": "Short headline", "subheading": "optional" }
     }
   ]

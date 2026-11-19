@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { askClaude, ClaudeLimitError } from './claude.js';
 import { readJson, writeJson, exists } from './util.js';
-import { prepareRefs, bannedIssues, styleLibrary } from './look.js';
+import { prepareRefs, bannedIssues, styleLibrary, rulesText } from './look.js';
 import { sceneHtml, esc } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
 
@@ -86,9 +86,10 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
   const failed = new Map();
   const runBatch = async (scenes, extraText) => {
     await writeJson(path.join(job.dir, 'design-input.json'), {
+      kind: plan.kind || 'general',
       scenes: scenes.map((s) => {
         const p = byId.get(s.id);
-        return { id: s.id, D: +(p.durationInFrames / fps).toFixed(2), narration: s.narration, hint: hint(s.visual), words: (p.words || []).map((w, i) => [i, w.text, +w.start.toFixed(2)]) };
+        return { id: s.id, D: +(p.durationInFrames / fps).toFixed(2), narration: s.narration, section: s.section || '', hint: hint(s.visual), words: (p.words || []).map((w, i) => [i, w.text, +w.start.toFixed(2)]) };
       }),
     });
     // keep the previous design: it comes back if the new one fails its checks
@@ -98,6 +99,7 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
     }
     try {
       await askClaude(job.dir, 'design', {
+        RULES: rulesText(look.niche),
         STYLE_FILE: style?.file || 'flat-explainer.md',
         STYLE_NAME: style?.name || look.styleName,
         FORMATS: formats.map((f) => (f === 'short' ? 'Short 9:16 (1080×1920)' : 'long 16:9 (1920×1080)')).join(' and '),
@@ -365,7 +367,7 @@ export async function reviewScenes(job, { plan, props, look, settings, formats, 
       sheets: sheets.map((f) => path.relative(job.dir, f).split(path.sep).join('/')),
     });
     try {
-      await askClaude(job.dir, 'critic', { STYLE_FILE: style?.file || 'flat-explainer.md' }, { maxTurns: 15, model });
+      await askClaude(job.dir, 'critic', { STYLE_FILE: style?.file || 'flat-explainer.md', RULES: rulesText(look.niche) }, { maxTurns: 15, model });
       review = await readJson(path.join(job.dir, 'critic', 'review.json'));
     } catch (e) {
       if (e instanceof ClaudeLimitError) throw e;
