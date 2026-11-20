@@ -5,7 +5,7 @@
 //      burning in the progress layer and the subtitles (ASS, libass)
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { run, audioDuration } from './util.js';
+import { run, audioDuration, rmSafe } from './util.js';
 
 const LEVEL = { low: 0.11, medium: 0.18, high: 0.27 };
 
@@ -116,8 +116,8 @@ export async function finishVideo({ chunks, out, work, progress, assFile, fontsD
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p',
     ...(keyframes.length ? ['-force_key_frames', keyframes.map((k) => k.toFixed(3)).join(',')] : []), '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', path.resolve(out));
   await run('ffmpeg', args, { cwd: work, timeoutMs: 6 * 60 * 60_000 });
-  await fs.rm(joined, { force: true });
-  await fs.rm(wav, { force: true });
+  await rmSafe(joined);
+  await rmSafe(wav);
 }
 
 /** Cut a finished video into parts at the given times (keyframes were forced there, so no re-encode). */
@@ -147,6 +147,6 @@ export async function highlights(file, out, duration) {
   const list = `${out}.txt`;
   await fs.writeFile(list, tmp.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
   await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out], { timeoutMs: 30 * 60_000 });
-  for (const f of [...tmp, list]) await fs.rm(f, { force: true });
+  for (const f of [...tmp, list]) await rmSafe(f);
   return out;
 }

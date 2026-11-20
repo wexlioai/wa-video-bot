@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { askClaude, ClaudeLimitError } from './claude.js';
-import { readJson, writeJson, exists } from './util.js';
+import { readJson, writeJson, exists, rmSafe } from './util.js';
 import { prepareRefs, bannedIssues, styleLibrary, rulesText } from './look.js';
 import { sceneHtml, esc } from './compose.js';
 import { basicDesign } from './scenes-basic.js';
@@ -137,7 +137,7 @@ export async function designScenes(job, { plan, props, look, formats, onProgress
         if (old?.design && index[s.id] === keyOf(s)) { await fs.rename(bak, f); failed.delete(s.id); } // keep the earlier good one
         else failed.set(s.id, r.problems);
       } else { failed.delete(s.id); index[s.id] = keyOf(s); }
-      await fs.rm(`${f}.bak`, { force: true });
+      await rmSafe(`${f}.bak`);
     }
     await writeJson(indexFile, index);
   };
@@ -260,7 +260,7 @@ function inspectFrame({ W, H, portrait, capPos, bg, D }) {
 export async function captureScenes(job, { props, designs, look, settings, format, gsapFile, fractions = [0.72], dirName = 'storyboard', onlyIds = null }) {
   const { chromium } = await import('playwright');
   const dir = path.join(job.dir, dirName);
-  await fs.rm(dir, { recursive: true, force: true });
+  await rmSafe(dir);
   await fs.mkdir(dir, { recursive: true });
   await fs.copyFile(gsapFile, path.join(dir, 'gsap.min.js'));
   await fs.copyFile(path.join(ROOT, 'motion', 'motion-lib.js'), path.join(dir, 'motion-lib.js')).catch(() => {});

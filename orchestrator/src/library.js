@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { cfg, ROOT } from './config.js';
-import { readJson, writeJson, exists } from './util.js';
+import { readJson, writeJson, exists, rmSafe } from './util.js';
 
 const LIB = () => path.join(cfg.dataDir, 'library');
 const INDEX = () => path.join(LIB(), 'index.json');
@@ -54,7 +54,7 @@ export async function seedLibrary() {
 export async function prepareLibraryRefs(jobDir, { niche, style, limit = 40 }) {
   const idx = await seedLibrary();
   const ref = path.join(jobDir, '_ref', 'library');
-  await fs.rm(ref, { recursive: true, force: true });
+  await rmSafe(ref);
   await fs.mkdir(ref, { recursive: true });
   const rank = (c) => (c.style === style ? 2 : 0) + (c.niche === niche ? 1 : 0) + (c.score || 0) / 10 + Math.min(c.uses || 0, 20) / 200;
   const pick = idx.components.filter((c) => (c.niche || 'general') === niche || c.style === style).sort((a, b) => rank(b) - rank(a)).slice(0, limit);

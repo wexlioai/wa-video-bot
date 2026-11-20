@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cfg } from './config.js';
-import { run, exists } from './util.js';
+import { run, exists, rmSafe } from './util.js';
 import { speak } from './tts.js';
 
 export const BATCH = 6;
@@ -135,7 +135,7 @@ export async function sampleFor(voice, lang) {
   await speak(SAMPLE_TEXT[lang] || SAMPLE_TEXT.en, voice.id, raw, lang);
   // keep it short: max 6 s with a soft fade at the end
   await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', raw, '-t', '6', '-af', 'afade=t=out:st=5.5:d=0.5', '-c:a', 'libmp3lame', '-b:a', '128k', out]);
-  await fs.rm(raw, { force: true });
+  await rmSafe(raw);
   return rel;
 }
 

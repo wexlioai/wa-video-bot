@@ -50,3 +50,32 @@ export function serial(fn) {
   chain = next.catch(() => {});
   return next;
 }
+
+// Windows keeps files locked for a moment after Chrome/FFmpeg exit (and antivirus scans new files),
+// so deleting or moving them right away can fail with EBUSY/EPERM. These retry, and a failed cleanup
+// never stops a job: leftovers are removed later.
+const LOCKED = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EACCES']);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Delete a file or folder; retries while it is locked, then gives up quietly (cleanup only). */
+export async function rmSafe(p, { recursive = true } = {}) {
+  try {
+    await fs.rm(p, { recursive, force: true, maxRetries: 8, retryDelay: 400 });
+  } catch (e) {
+    if (!LOCKED.has(e.code)) throw e;
+    console.log(`cleanup skipped (still in use, removed later): ${p}`);
+  }
+}
+
+/** Move a file; retries while it is locked, then falls back to copy + delete. */
+export async function moveFile(from, to) {
+  for (let i = 0; i < 8; i++) {
+    try { return await fs.rename(from, to); } catch (e) {
+      if (!LOCKED.has(e.code) && e.code !== 'EXDEV') throw e;
+      if (e.code === 'EXDEV') break;
+      await wait(300 * (i + 1));
+    }
+  }
+  await fs.copyFile(from, to);
+  await rmSafe(from, { recursive: false });
+}

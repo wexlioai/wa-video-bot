@@ -9,7 +9,7 @@ import { askClaude, ClaudeLimitError } from './claude.js';
 import { validatePlan } from './plan.js';
 import { buildProps, renderVideo } from './render.js';
 import { uploadVideo } from './youtube.js';
-import { serial, exists, readJson, writeJson, queueLength } from './util.js';
+import { serial, exists, readJson, writeJson, queueLength, rmSafe } from './util.js';
 import { voicePage, sampleFor, hasSample, sameService, currentFamily } from './voices.js';
 import { startProgress } from './progress.js';
 import { engineMissing, runEngineTest, doctor, motionEngine, renderProject, markEngineOk, gsapPath } from './motion.js';
@@ -309,7 +309,7 @@ async function undo(job) {
   const prev = path.join(job.dir, 'plan.prev.json');
   if (!(await exists(prev))) return wa.sendText('Nothing to undo.');
   await fs.copyFile(prev, path.join(job.dir, 'plan.json'));
-  await fs.rm(prev, { force: true });
+  await rmSafe(prev);
   return runStep(job, 'produce');
 }
 
@@ -411,7 +411,7 @@ async function changeVideo(job, request) {
   const style = (await styleLibrary()).find((x) => x.id === look?.style);
   await writeTimeline(job, plan);
   await prepareRefs(job.dir);
-  await fs.rm(path.join(job.dir, 'change.json'), { force: true });
+  await rmSafe(path.join(job.dir, 'change.json'));
   const p = await startProgress('✏️ Claude is making your change…');
   let reply;
   try {
@@ -616,7 +616,7 @@ const steps = {
       : '🎨 Claude is designing 3 looks for your video… (about 2-3 minutes)');
     let res = null;
     try {
-      await fs.rm(path.join(job.dir, 'look'), { recursive: true, force: true });
+      await rmSafe(path.join(job.dir, 'look'));
       await prepareRefs(job.dir);
       const niche = nicheOf(prefs);
       job.niche = niche;
@@ -1078,7 +1078,7 @@ const steps = {
     const look = await loadLook(job.dir);
     const style = (await styleLibrary()).find((x) => x.id === look?.style);
     const backup = path.join(job.dir, 'scenes.prev');
-    await fs.rm(backup, { recursive: true, force: true });
+    await rmSafe(backup);
     await fs.cp(path.join(job.dir, 'scenes'), backup, { recursive: true });
     await fs.copyFile(path.join(job.dir, 'look.json'), path.join(backup, 'look.json'));
     const p = await startProgress('✏️ Claude is changing the scenes…');
@@ -1120,7 +1120,7 @@ const steps = {
     let shots = [];
     try {
       await prepareRefs(job.dir);
-      await fs.rm(path.join(job.dir, 'thumbs'), { recursive: true, force: true });
+      await rmSafe(path.join(job.dir, 'thumbs'));
       await fs.mkdir(path.join(job.dir, 'thumbs'), { recursive: true });
       await askClaude(job.dir, 'thumbs', { STYLE_FILE: style?.file || 'flat-explainer.md', RULES: rulesText(look?.niche) }, { maxTurns: 25 });
       shots = await shootThumbs(job.dir);

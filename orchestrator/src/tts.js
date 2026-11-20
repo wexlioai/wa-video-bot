@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cfg, ROOT } from './config.js';
-import { audioDuration, run } from './util.js';
+import { audioDuration, run, rmSafe } from './util.js';
 
 /** Speak with the configured provider: 'edge' (free), 'openspeaker' or 'elevenlabs'. */
 // speed: extra multiplier from the video's settings (1 = the configured default)
@@ -121,7 +121,7 @@ async function speakOpenSpeaker(text, voiceId, outFile, speed = 1) {
     const tmp = `${outFile}${ext}`;
     await fs.writeFile(tmp, buf);
     await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', tmp, '-c:a', 'libmp3lame', '-b:a', '160k', outFile]);
-    await fs.rm(tmp, { force: true });
+    await rmSafe(tmp);
   }
   const duration = await audioDuration(outFile);
 
@@ -217,8 +217,8 @@ async function speakEdge(text, voice, outFile, speed = 1) {
   if (lastErr) throw new Error(`Free voice (edge-tts) failed: ${String(lastErr.message).slice(-300)}`);
   const duration = await audioDuration(outFile);
   const raw = JSON.parse(await fs.readFile(meta, 'utf8'));
-  await fs.rm(tmpText, { force: true });
-  await fs.rm(meta, { force: true });
+  await rmSafe(tmpText);
+  await rmSafe(meta);
   return { words: raw.length ? withOriginalText(raw, text) : estimateWords(text, duration), duration };
 }
 

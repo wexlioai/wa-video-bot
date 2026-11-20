@@ -13,7 +13,7 @@ import { finishVideo, splitAt, highlights } from './finish.js';
 import { basicDesign } from './scenes-basic.js';
 import { progressLayer } from './overlay.js';
 import { sfxVolume } from './music.js';
-import { run, exists, audioDuration } from './util.js';
+import { run, exists, audioDuration, rmSafe, moveFile } from './util.js';
 
 export const MOTION_DIR = path.join(ROOT, 'motion');
 const bin = () => path.join(MOTION_DIR, 'node_modules', '.bin', process.platform === 'win32' ? 'hyperframes.cmd' : 'hyperframes');
@@ -331,7 +331,11 @@ export async function renderProject(job, format, { props, settings, designs = {}
   for (const [ci, ch] of chunks.entries()) {
     const start = ch[0].offset;
     const scenes = ch.map((s) => ({ id: s.id, offset: s.offset - start, duration: s.duration, words: s.words, audio: s.audio ? `voice-${s.id}${path.extname(s.audio)}` : null, design: designOf(s) }));
-    const dir = path.join(work, `chunk-${String(ci).padStart(3, '0')}`);
+    let dir = path.join(work, `chunk-${String(ci).padStart(3, '0')}`);
+    if (await exists(dir)) { // left over from a stopped render; if Windows still locks it, use a fresh folder
+      await rmSafe(dir);
+      if (await exists(dir)) dir = `${dir}-${Date.now()}`;
+    }
     await fs.mkdir(dir, { recursive: true });
     const fontsCss = await localFontsCss([...fontQueries], dir);
     const html = compositionHtml({ scenes, format, lang: props.language, theme: props.theme, settings, motion: look?.motion, fontsCss, captions: false, compId: 'chunk' });
@@ -359,8 +363,8 @@ export async function renderProject(job, format, { props, settings, designs = {}
       if (r.code !== 0 || !(await exists(tmp))) {
         throw new Error(`HyperFrames could not render scenes ${ch[0].id}-${ch[ch.length - 1].id}: ${(r.stderr || r.stdout || '').trim().split('\n').slice(-8).join(' | ').slice(0, 900)}`);
       }
-      await fs.rename(tmp, clip);
-      await fs.rm(dir, { recursive: true, force: true });
+      await moveFile(tmp, clip);
+      await rmSafe(dir);
     }
     clips.push(clip);
     for (const c of (await readJsonSafe(sfxFile)) || []) cueList.push({ ...c, t: c.t + start });
@@ -408,7 +412,8 @@ export async function renderProject(job, format, { props, settings, designs = {}
   }
   if (name !== format) return out; // partial (demo) render: keep the full video's cache
   const keep = new Set(clips.map((c) => path.basename(c)));
-  for (const f of await fs.readdir(clipDir)) if (!keep.has(f)) await fs.rm(path.join(clipDir, f), { force: true });
+  for (const c of clips) keep.add(`${path.basename(c)}.sfx.json`);
+  for (const f of await fs.readdir(clipDir)) if (!keep.has(f)) await rmSafe(path.join(clipDir, f));
   return out;
 }
 

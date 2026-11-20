@@ -6,7 +6,7 @@
 //   data/jobs/<id>/clips/<format>/    rendered scene clips, cached by content hash
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readJson, writeJson, exists } from './util.js';
+import { readJson, writeJson, exists, rmSafe } from './util.js';
 
 export const CAPTION_SIZES = ['S', 'M', 'L', 'XL'];
 export const CAPTION_POSITIONS = ['bottom', 'middle', 'top', 'off'];
@@ -159,7 +159,7 @@ export async function restoreVersion(job, n) {
     const dst = path.join(job.dir, name);
     if (!(await exists(src))) continue;
     if ((await fs.stat(src)).isDirectory()) {
-      await fs.rm(dst, { recursive: true, force: true });
+      await rmSafe(dst);
       await copyDir(src, dst);
     } else await fs.copyFile(src, dst);
   }
